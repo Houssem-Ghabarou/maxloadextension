@@ -15,11 +15,15 @@
   let running = false;
 
   // ---- native value setting (works with Maximo/React-style inputs) ----------
+  function isRichText(el) {
+    return (
+      el.isContentEditable ||
+      (el.getAttribute && (el.getAttribute("contenteditable") || "") === "true") ||
+      (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA" && (el.getAttribute && (el.getAttribute("role") || "").toLowerCase() === "textbox"))
+    );
+  }
+
   function setNativeValue(el, value) {
-    const proto = Object.getPrototypeOf(el);
-    const desc =
-      Object.getOwnPropertyDescriptor(el, "value") ||
-      Object.getOwnPropertyDescriptor(proto, "value");
     if (el.tagName === "SELECT") {
       selectOption(el, value);
       return;
@@ -29,6 +33,21 @@
       if (el.checked !== want) MaxLoad.util.realClick(el);
       return;
     }
+    // rich-text editor (contenteditable / role=textbox, often in an iframe) has
+    // no .value — set its editable content instead.
+    if (isRichText(el)) {
+      try {
+        el.focus();
+        el.textContent = String(value);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      } catch (_) {}
+      return;
+    }
+    const proto = Object.getPrototypeOf(el);
+    const desc =
+      Object.getOwnPropertyDescriptor(el, "value") ||
+      Object.getOwnPropertyDescriptor(proto, "value");
     if (desc && desc.set) desc.set.call(el, value);
     else el.value = value;
   }
@@ -65,6 +84,11 @@
       await MaxLoad.input.click(el);
       setNativeValue(el, value);
       fireInputEvents(el);
+      return;
+    }
+    if (isRichText(el)) {
+      // rich-text editor: type into it, but no Tab commit (Tab inserts a tab char)
+      await MaxLoad.input.type(el, value, "");
       return;
     }
     await MaxLoad.input.type(el, value, "tab");
@@ -556,16 +580,22 @@
         // stop waiting the instant a popup appears (don't burn the full timeout)
         await MaxLoad.settle.waitForSettleOrModal({ quietMs: 400, timeoutMs: save ? 12000 : 8000 });
 
-        // handle any popup this click produced (New's discard prompt, save error, …)
-        h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
-        if (h.outcome === "abort") return { status: "abort", message: h.message };
-        if (h.outcome === "fail") return { status: "failed", message: h.message };
-
-        if (save) saved = true;
         if (isNewStep(step)) {
+          // ENTRY: the "save changes?" prompt here = discard the previous dirty
+          // record and CONTINUE onto a fresh one. Never fails the new row.
+          const e = await MaxLoad.errorWatcher.handleEntryPrompt(rowNum, meta.screen);
+          if (e.outcome === "abort") return { status: "abort", message: e.message };
+          if (e.outcome === "fail") return { status: "failed", message: e.message };
           const ready = await verifyEntry(workflow);
           if (!ready) return { status: "failed", transient: true, message: "record form did not open after New" };
+        } else {
+          // any popup this click produced (save error, business rule, …)
+          h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
+          if (h.outcome === "abort") return { status: "abort", message: h.message };
+          if (h.outcome === "fail") return { status: "failed", message: h.message };
         }
+
+        if (save) saved = true;
         await MaxLoad.rules.applyRules({});
       } else if (step.type === "set-field") {
         const fv = fieldValueFor(step, row);

@@ -202,6 +202,32 @@
     return { outcome, message: m.text, button: btn && btn.label, taught };
   }
 
+  /**
+   * Special handling for the moment right after clicking New/entry: a confirm
+   * dialog here is Maximo's "save your changes before continuing?" — i.e. the
+   * PREVIOUS record is dirty. We always press No (discard) and CONTINUE onto the
+   * fresh record. This is navigation, not a data error, so it must never fail the
+   * new row (and it bypasses any taught rule, which is meant for real popups).
+   */
+  async function handleEntryPrompt(rowNum, screen) {
+    for (let k = 0; k < 4; k++) {
+      const m = findModal();
+      if (!m) return { outcome: "none" };
+      if (SESSION_RE.test(m.text)) return { outcome: "abort", message: m.text };
+      if (!isConfirm(m.buttons)) {
+        // a real error popped at entry -> normal (taught rule / default) handling
+        return await handle(rowNum, screen);
+      }
+      const btn = noButton(m.buttons) || okButton(m.buttons);
+      if (MaxLoad.hl) MaxLoad.hl.toast(`Row ${rowNum}: discarding previous record (No)…`, "click");
+      MaxLoad.log(`entry: discard previous record via '${btn && btn.label}' -> continue`);
+      const closed = await press(m, btn);
+      if (!closed) return { outcome: "abort", message: "could not close discard prompt: " + m.text.slice(0, 120) };
+      await MaxLoad.settle.waitForSettle({ quietMs: 250, timeoutMs: 3000 });
+    }
+    return { outcome: "continue" };
+  }
+
   // ---- visible reporting ----------------------------------------------------
   function reportModal(rowNum, m, rule) {
     const label = rule ? "taught" : isConfirm(m.buttons) ? "confirm→No" : "error→dismiss";
@@ -289,6 +315,7 @@
     findModal,
     currentBlocking,
     handle,
+    handleEntryPrompt,
     handleIfPresent,
     captureInlineMessages,
     teachModal,

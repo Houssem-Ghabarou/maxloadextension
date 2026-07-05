@@ -112,11 +112,21 @@
 
   function syntheticSet(el, value) {
     try {
-      const proto = Object.getPrototypeOf(el);
-      const desc =
-        Object.getOwnPropertyDescriptor(el, "value") || Object.getOwnPropertyDescriptor(proto, "value");
-      if (desc && desc.set) desc.set.call(el, value);
-      else el.value = value;
+      // rich-text / contenteditable (no .value) — set editable content
+      const rich =
+        el.isContentEditable ||
+        (el.getAttribute && (el.getAttribute("contenteditable") || "") === "true") ||
+        (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA" && el.getAttribute && (el.getAttribute("role") || "").toLowerCase() === "textbox");
+      if (rich) {
+        el.focus();
+        el.textContent = String(value);
+      } else {
+        const proto = Object.getPrototypeOf(el);
+        const desc =
+          Object.getOwnPropertyDescriptor(el, "value") || Object.getOwnPropertyDescriptor(proto, "value");
+        if (desc && desc.set) desc.set.call(el, value);
+        else el.value = value;
+      }
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
       el.dispatchEvent(new Event("blur", { bubbles: true }));

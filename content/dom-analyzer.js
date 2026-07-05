@@ -14,10 +14,11 @@
     "select",
     "[role=textbox]",
     "[role=combobox]",
-    "[contenteditable=true]"
+    "[contenteditable]:not([contenteditable='false'])"
   ].join(",");
 
-  /** Recursively collect { doc, frameEl } for the root doc and same-origin iframes. */
+  /** Recursively collect the root document plus every reachable iframe document
+   *  (same-origin, incl. Maximo's javascript:/designMode rich-text editors). */
   function collectDocuments(root, out, depth) {
     out = out || [];
     depth = depth || 0;
@@ -32,17 +33,18 @@
     for (const f of frames) {
       let cdoc = null;
       try {
-        cdoc = f.contentDocument;
+        cdoc = f.contentDocument || (f.contentWindow && f.contentWindow.document);
       } catch (_) {
         cdoc = null; // cross-origin
       }
-      if (cdoc) collectDocuments(cdoc, out, depth + 1);
+      if (cdoc && out.indexOf(cdoc) === -1) collectDocuments(cdoc, out, depth + 1);
     }
     return out;
   }
 
   /** Find the visible label text associated with a control. */
-  function labelFor(el) {
+  function labelFor(el, depth) {
+    depth = depth || 0;
     const doc = el.ownerDocument;
     // 1. explicit <label for=id>
     if (el.id) {
@@ -55,9 +57,9 @@
       if (p.tagName === "LABEL" && p.textContent.trim()) return p.textContent.trim();
     }
     // 3. aria-label / aria-labelledby
-    const aria = el.getAttribute("aria-label");
+    const aria = el.getAttribute && el.getAttribute("aria-label");
     if (aria) return aria.trim();
-    const alby = el.getAttribute("aria-labelledby");
+    const alby = el.getAttribute && el.getAttribute("aria-labelledby");
     if (alby) {
       const parts = alby
         .split(/\s+/)
@@ -68,13 +70,25 @@
       if (parts.length) return parts.join(" ");
     }
     // 4. Maximo pattern: label cell to the left in a table row
-    const cell = el.closest("td");
+    const cell = el.closest && el.closest("td");
     if (cell && cell.previousElementSibling) {
       const t = cell.previousElementSibling.textContent.trim();
       if (t) return t;
     }
-    // 5. title / placeholder
-    return (el.getAttribute("title") || el.getAttribute("placeholder") || "").trim();
+    const own = (el.getAttribute && (el.getAttribute("title") || el.getAttribute("placeholder")) || "").trim();
+    if (own) return own;
+    // 5. element inside an iframe (rich-text editor): the caption lives in the
+    //    PARENT document next to the <iframe>. Resolve it from there.
+    if (depth < 3) {
+      try {
+        const win = doc.defaultView;
+        if (win && win.frameElement && win.frameElement.ownerDocument !== doc) {
+          const l = labelFor(win.frameElement, depth + 1);
+          if (l) return l;
+        }
+      } catch (_) {}
+    }
+    return "";
   }
 
   function cssEscape(s) {
@@ -96,11 +110,17 @@
     return ctxs;
   }
 
-  /** Determine the control type for matching (textbox|lookup|select|checkbox). */
+  /** Determine the control type for matching (textbox|lookup|select|checkbox|richtext). */
   function controlType(el) {
     const tag = el.tagName.toLowerCase();
     if (tag === "select") return "select";
     if (tag === "textarea") return "textarea";
+    // rich-text editor: a role=textbox / contenteditable div (often inside an
+    // iframe with designMode) — no .value, filled as editable content.
+    const role = (el.getAttribute("role") || "").toLowerCase();
+    if (role === "textbox" || el.isContentEditable || (el.getAttribute("contenteditable") || "") === "true") {
+      if (tag !== "input") return "richtext";
+    }
     const type = (el.getAttribute("type") || "text").toLowerCase();
     if (type === "checkbox" || type === "radio") return "checkbox";
     // Maximo lookup fields have a sibling lookup/menu button
