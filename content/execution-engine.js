@@ -77,6 +77,20 @@
     el.dispatchEvent(new Event("blur", { bubbles: true }));
   }
 
+  /** Dispatch a full key sequence on a specific element (Maximo reads keyCode). */
+  function dispatchKeyOn(el, key) {
+    const vk = key === "Enter" ? 13 : key === "Escape" ? 27 : key === "Tab" ? 9 : 0;
+    const win = el.ownerDocument.defaultView || window;
+    const K = win.KeyboardEvent || KeyboardEvent;
+    const opt = { key, code: key, keyCode: vk, which: vk, bubbles: true, cancelable: true };
+    try {
+      el.focus();
+      el.dispatchEvent(new K("keydown", opt));
+      el.dispatchEvent(new K("keypress", opt));
+      el.dispatchEvent(new K("keyup", opt));
+    } catch (_) {}
+  }
+
   /** Type into a field with real trusted input (selects + overwrites + commits). */
   async function typeInto(el, value) {
     if (el.tagName === "SELECT" || el.type === "checkbox") {
@@ -420,18 +434,28 @@
   }
 
   // ---- sequence replay (the "follow-what-you-do" workflows) -----------------
+  /** Apply a Maximo search/QBE operator to a value (e.g. ">", "%…%"). */
+  function applyOperator(op, v) {
+    if (!op || op === "none") return v;
+    if (op === "contains") return "%" + v + "%";
+    if (op === "starts") return v + "%";
+    if (op === "ends") return "%" + v;
+    return op + v; // = > < >= <= != ~
+  }
+
   /** Decide the value to type into a mapped field step for a given row. */
   function fieldValueFor(step, row) {
     const map = step.column || "__ignore__";
+    let v;
     if (map === "__ignore__") return { skip: true };
-    if (map === "__fixed__") return { value: step.sampleValue != null ? String(step.sampleValue) : "" };
-    if (map === "__key__") {
-      const v = row._key_value != null ? String(row._key_value).trim() : "";
-      return v === "" ? { skip: true } : { value: v };
+    if (map === "__fixed__") v = step.sampleValue != null ? String(step.sampleValue) : "";
+    else if (map === "__key__") v = row._key_value != null ? String(row._key_value).trim() : "";
+    else {
+      const raw = row[map];
+      v = raw != null ? String(raw).trim() : "";
     }
-    const raw = row[map];
-    const v = raw != null ? String(raw).trim() : "";
-    return v === "" ? { skip: true } : { value: v }; // empty cell -> never write (no blanking)
+    if (v === "") return { skip: true }; // empty cell -> never write (no blanking)
+    return { value: applyOperator(step.operator, v) };
   }
 
   async function resolveStepField(step, meta) {
@@ -541,11 +565,11 @@
   }
 
   /**
-   * Replay the recorded scenario for one data row.
-   * A popup after any step is resolved by the modal handler:
-   *   continue -> keep going;  fail -> skip this row;  abort -> stop the run.
-   * A failed row leaves a dirty record; the NEXT row's own "New" click discards
-   * it (the "save changes?" prompt -> No), so the same scenario runs clean again.
+   * Replay the recorded scenario for one data row — the SAME simple flow for
+   * CREATE and UPDATE. Whatever you taught (click New / type in a search box /
+   * press Enter / click a record / edit fields / Save) is replayed in order,
+   * with each field filled from its mapped Excel column. Popups are resolved by
+   * the modal handler (continue / skip-row / abort).
    */
   async function runRowSeq(workflow, row, rowNum) {
     const meta = { app: workflow.name, screen: workflow.screen };
@@ -577,19 +601,16 @@
         MaxLoad.hl && MaxLoad.hl.flash(rb.el, save ? "save" : "click");
         MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: ${save ? "Save" : "click “" + (step.text || "button") + "”"}`, save ? "save" : "click");
         await MaxLoad.input.click(rb.el);
-        // stop waiting the instant a popup appears (don't burn the full timeout)
         await MaxLoad.settle.waitForSettleOrModal({ quietMs: 400, timeoutMs: save ? 12000 : 8000 });
 
         if (isNewStep(step)) {
-          // ENTRY: the "save changes?" prompt here = discard the previous dirty
-          // record and CONTINUE onto a fresh one. Never fails the new row.
+          // ENTRY: "save changes?" here = discard the previous record and continue.
           const e = await MaxLoad.errorWatcher.handleEntryPrompt(rowNum, meta.screen);
           if (e.outcome === "abort") return { status: "abort", message: e.message };
           if (e.outcome === "fail") return { status: "failed", message: e.message };
           const ready = await verifyEntry(workflow);
           if (!ready) return { status: "failed", transient: true, message: "record form did not open after New" };
         } else {
-          // any popup this click produced (save error, business rule, …)
           h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
           if (h.outcome === "abort") return { status: "abort", message: h.message };
           if (h.outcome === "fail") return { status: "failed", message: h.message };
@@ -599,7 +620,13 @@
         await MaxLoad.rules.applyRules({});
       } else if (step.type === "set-field") {
         const fv = fieldValueFor(step, row);
-        if (fv.skip) continue;
+        if (fv.skip) {
+          const nm0 = (step.target && (step.target.label || step.target.stableKey)) || "field";
+          const why = !step.column || step.column === "__ignore__" ? "(not mapped)" : `(column "${step.column}" empty)`;
+          MaxLoad.log(`row ${rowNum}: skip "${nm0}" ${why}`);
+          reportStep(rowNum, idx, "skip", nm0 + " " + why, "empty");
+          continue;
+        }
         const r = await resolveStepField(step, meta);
         const nm = (step.target && (step.target.label || step.target.stableKey)) || "field";
         if (!r.el) return { status: "failed", transient: true, message: `step ${idx + 1}: field "${nm}" not found` };
@@ -613,6 +640,24 @@
         await typeInto(r.el, fv.value);
         await MaxLoad.rules.applyRules({ searchTerm: fv.value });
         await MaxLoad.settle.waitForSettleOrModal({ quietMs: 300, timeoutMs: 4000 });
+
+        h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
+        if (h.outcome === "abort") return { status: "abort", message: h.message };
+        if (h.outcome === "fail") return { status: "failed", message: h.message };
+      } else if (step.type === "key") {
+        // press a recorded key (Enter to submit a search, etc.) on its field
+        let kel = null;
+        if (step.binding) {
+          kel = MaxLoad.binder.locate(step.binding);
+          if (kel) await MaxLoad.input.click(kel); // re-focus the field first
+        }
+        reportStep(rowNum, idx, "key", "⌨ " + step.key, "cdp");
+        MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: press ${step.key}`, "click");
+        // belt-and-suspenders: dispatch the key on the element (Maximo onkeydown
+        // reads keyCode) AND send a trusted CDP key.
+        if (kel) dispatchKeyOn(kel, step.key);
+        await MaxLoad.input.pressKey(step.key);
+        await MaxLoad.settle.waitForSettleOrModal({ quietMs: 500, timeoutMs: 12000 });
 
         h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
         if (h.outcome === "abort") return { status: "abort", message: h.message };

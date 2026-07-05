@@ -133,11 +133,41 @@
     } catch (_) {}
   }
 
+  const KEYMAP = {
+    enter: { key: "Enter", code: "Enter", vk: 13 },
+    tab: { key: "Tab", code: "Tab", vk: 9 },
+    escape: { key: "Escape", code: "Escape", vk: 27 },
+    esc: { key: "Escape", code: "Escape", vk: 27 },
+    arrowdown: { key: "ArrowDown", code: "ArrowDown", vk: 40 },
+    arrowup: { key: "ArrowUp", code: "ArrowUp", vk: 38 }
+  };
+
+  /** Press a key (trusted, via CDP) on whatever is focused; synthetic fallback. */
+  async function pressKey(keyName) {
+    const k = KEYMAP[String(keyName || "").toLowerCase()] || { key: keyName, code: keyName, vk: 0 };
+    try {
+      const r = await chrome.runtime.sendMessage({ type: "ml:cdp:key", key: k.key, code: k.code, vk: k.vk });
+      if (r && r.ok) return true;
+      MaxLoad.warn("cdp key failed, synthetic fallback: " + (r && r.error));
+    } catch (e) {
+      MaxLoad.warn("cdp key message failed: " + String(e));
+    }
+    try {
+      const el = document.activeElement || document.body;
+      const K = (el.ownerDocument.defaultView || window).KeyboardEvent || KeyboardEvent;
+      const opt = { key: k.key, code: k.code, keyCode: k.vk, which: k.vk, bubbles: true, cancelable: true };
+      el.dispatchEvent(new K("keydown", opt));
+      el.dispatchEvent(new K("keypress", opt));
+      el.dispatchEvent(new K("keyup", opt));
+    } catch (_) {}
+    return false;
+  }
+
   async function detach() {
     try {
       await chrome.runtime.sendMessage({ type: "ml:cdp:detach" });
     } catch (_) {}
   }
 
-  MaxLoad.input = { click, type, detach, topCoords };
+  MaxLoad.input = { click, type, pressKey, detach, topCoords };
 })();

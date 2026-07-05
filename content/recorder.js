@@ -99,6 +99,26 @@
     broadcast();
   }
 
+  // ---- key steps (Enter to submit a search, Escape to close, …) -------------
+  function onKeyDown(ev) {
+    if (!state.recording) return;
+    const key = ev.key;
+    if (key !== "Enter" && key !== "Escape") return; // only meaningful action keys
+    const el = ev.target;
+    const binding = isControl(el) ? captureBinding("field", el) : null;
+    state.steps.push({
+      id: MaxLoad.util.uid(),
+      type: "key",
+      key,
+      binding,
+      target: binding
+        ? { label: binding.label, stableKey: binding.stableKey, controlType: binding.controlType, tabContext: binding.tabContext }
+        : null
+    });
+    MaxLoad.log("teach: key " + key + (binding ? " in " + (binding.label || binding.stableKey) : ""));
+    broadcast();
+  }
+
   function onFocusIn(ev) {
     if (!state.recording) return;
     const el = ev.target;
@@ -128,6 +148,7 @@
       doc.addEventListener("focusin", onFocusIn, true);
       doc.addEventListener("change", onChange, true);
       doc.addEventListener("click", onClick, true);
+      doc.addEventListener("keydown", onKeyDown, true);
     });
   }
   function detach() {
@@ -135,6 +156,7 @@
       doc.removeEventListener("focusin", onFocusIn, true);
       doc.removeEventListener("change", onChange, true);
       doc.removeEventListener("click", onClick, true);
+      doc.removeEventListener("keydown", onKeyDown, true);
     });
   }
 
@@ -146,6 +168,18 @@
     const s = state.steps[typeof stepId === "number" ? stepId : findIndex(stepId)];
     if (!s || s.type !== "set-field") return;
     s.column = value || "__ignore__";
+    broadcast();
+  }
+  function setStepOperator(stepId, op) {
+    const s = state.steps[typeof stepId === "number" ? stepId : findIndex(stepId)];
+    if (!s || s.type !== "set-field") return;
+    s.operator = op && op !== "none" ? op : null;
+    broadcast();
+  }
+  function setStepSearch(stepId, on) {
+    const s = state.steps[typeof stepId === "number" ? stepId : findIndex(stepId)];
+    if (!s || s.type !== "set-field") return;
+    s.search = !!on; // this field searches & opens the record (UPDATE)
     broadcast();
   }
   function removeStep(stepId) {
@@ -216,7 +250,7 @@
 
   MaxLoad.recorder = {
     start, stop, buildWorkflow,
-    setStepColumn, removeStep, moveStep,
+    setStepColumn, setStepOperator, setStepSearch, removeStep, moveStep,
     get state() { return state; }
   };
 })();

@@ -29,6 +29,16 @@
             sendResponse({ ok: true });
             break;
 
+          case "ml:cmd:set-step-operator":
+            MaxLoad.recorder.setStepOperator(msg.stepId, msg.operator);
+            sendResponse({ ok: true });
+            break;
+
+          case "ml:cmd:set-step-search":
+            MaxLoad.recorder.setStepSearch(msg.stepId, msg.on);
+            sendResponse({ ok: true });
+            break;
+
           case "ml:cmd:remove-step":
             MaxLoad.recorder.removeStep(msg.stepId);
             sendResponse({ ok: true });

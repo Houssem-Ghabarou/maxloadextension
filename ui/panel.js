@@ -133,6 +133,31 @@
     return sel;
   }
 
+  function opMenu(step) {
+    const sel = document.createElement("select");
+    sel.style.maxWidth = "130px";
+    const add = (label, value) => {
+      const o = el("option", null, label);
+      o.value = value;
+      sel.appendChild(o);
+    };
+    add("(no operator)", "none");
+    add("=  equals", "=");
+    add(">  greater", ">");
+    add("<  less", "<");
+    add("≥  >=", ">=");
+    add("≤  <=", "<=");
+    add("≠  not", "!=");
+    add("contains  %v%", "contains");
+    add("starts  v%", "starts");
+    add("ends  %v", "ends");
+    sel.value = step.operator || "none";
+    sel.addEventListener("change", () =>
+      sendCmd({ type: "ml:cmd:set-step-operator", stepId: step.id, operator: sel.value })
+    );
+    return sel;
+  }
+
   function stepControls(step) {
     const wrap = el("div", "row");
     wrap.style.gap = "4px";
@@ -163,20 +188,29 @@
       info.style.flex = "1";
 
       if (s.type === "click") {
-        const kind = /save/.test((s.binding.role || "")) ? "💾" : /new/.test((s.binding.role || "")) ? "➕" : "👆";
-        info.appendChild(el("strong", null, `${i + 1}. ${kind} click “${s.text || s.binding.stableKey || "element"}”`));
-        info.appendChild(el("div", "meta", `key: ${s.binding.stableKey || s.binding.id || "—"}`));
+        const role = (s.binding && s.binding.role) || "";
+        const kind = /save/.test(role) ? "💾" : /new/.test(role) ? "➕" : "👆";
+        info.appendChild(el("strong", null, `${i + 1}. ${kind} click “${s.text || (s.binding && s.binding.stableKey) || "element"}”`));
+        info.appendChild(el("div", "meta", `key: ${(s.binding && (s.binding.stableKey || s.binding.id)) || "—"}`));
+        head.append(info, stepControls(s));
+        li.appendChild(head);
+      } else if (s.type === "key") {
+        const where = s.target && (s.target.label || s.target.stableKey);
+        info.appendChild(el("strong", null, `${i + 1}. ⌨ press ${s.key}${where ? " in " + where : ""}`));
         head.append(info, stepControls(s));
         li.appendChild(head);
       } else {
-        info.appendChild(el("strong", null, `${i + 1}. ✎ ${s.target.label || s.binding.stableKey || "field"}`));
-        info.appendChild(el("div", "meta", `[${s.target.controlType}] key: ${s.binding.stableKey || s.binding.id || "—"}`));
+        info.appendChild(el("strong", null, `${i + 1}. ✎ ${(s.target && s.target.label) || (s.binding && s.binding.stableKey) || "field"}`));
+        info.appendChild(el("div", "meta", `[${s.target && s.target.controlType}] key: ${(s.binding && (s.binding.stableKey || s.binding.id)) || "—"}`));
         head.append(info, stepControls(s));
         li.appendChild(head);
         const row2 = el("div", "row");
         row2.style.marginTop = "5px";
+        row2.style.flexWrap = "wrap";
         row2.appendChild(el("span", "muted", "fill with:"));
         row2.appendChild(colMenu(s));
+        row2.appendChild(el("span", "muted", "op:"));
+        row2.appendChild(opMenu(s));
         li.appendChild(row2);
       }
       ul.appendChild(li);
@@ -364,13 +398,18 @@
     wf.steps.forEach((s) => {
       if (s.type === "click") {
         const role = (s.binding && s.binding.role) || "";
-        const verb = /save/.test(role) ? "Save the record & confirm it committed" : /new/.test(role) ? `Click “${s.text}” (start a new record)` : `Click “${s.text}”`;
-        lines.push(verb);
+        if (/save/.test(role)) lines.push("Save the record & confirm it committed");
+        else if (/new/.test(role)) lines.push(`Click “${s.text}” (start a new record)`);
+        else lines.push(`Click “${s.text}”`);
+      } else if (s.type === "key") {
+        lines.push(`Press ${s.key}`);
       } else if (s.type === "set-field") {
         const nm = (s.target && s.target.label) || (s.binding && s.binding.stableKey) || "field";
-        if (s.column === "__ignore__" || !s.column) return; // skipped
-        const src = s.column === "__key__" ? "the record key (_key_value)" : s.column === "__fixed__" ? `the fixed value “${s.sampleValue}”` : `column “${s.column}”`;
-        lines.push(`Fill ${nm} with ${src}`);
+        const op = s.operator ? ` (operator ${s.operator})` : "";
+        const src = s.column === "__key__" ? "_key_value" : `column “${s.column}”`;
+        if (s.column === "__ignore__" || !s.column) lines.push(`↷ ${nm} — not filled`);
+        else if (s.column === "__fixed__") lines.push(`Fill ${nm} with fixed “${s.sampleValue}”${op}`);
+        else lines.push(`Fill ${nm} with ${src}${op}`);
       }
     });
     return lines;
@@ -537,8 +576,12 @@
     } else if (ev.phase === "row-start") {
       feed(`Row ${ev.index + 1} [${ev.action}] …`);
     } else if (ev.phase === "step") {
-      const viaIcon = ev.via === "ai" || ev.via === "cache:ai" ? "🤖 AI" : ev.via === "label" || ev.via === "binding" ? "✓ direct" : "≈ " + ev.via;
-      feed(`&nbsp;&nbsp;• ${ev.kind} “${escapeHtml(ev.name)}” — ${viaIcon}`, ev.via === "ai" ? "warn" : "");
+      if (ev.kind === "skip") {
+        feed(`&nbsp;&nbsp;⏭ skipped ${escapeHtml(ev.name)}`, "warn");
+      } else {
+        const viaIcon = ev.via === "ai" || ev.via === "cache:ai" ? "🤖 AI" : ev.via === "label" || ev.via === "binding" ? "✓ direct" : "≈ " + ev.via;
+        feed(`&nbsp;&nbsp;• ${ev.kind} “${escapeHtml(ev.name)}” — ${viaIcon}`, ev.via === "ai" ? "warn" : "");
+      }
     } else if (ev.phase === "modal") {
       feed(`&nbsp;&nbsp;⚠ modal [${escapeHtml(ev.classification)}] → press “${escapeHtml(ev.button || "?")}” — ${escapeHtml((ev.text || "").slice(0, 120))}`, ev.action === "abort-run" ? "error" : "warn");
     } else if (ev.phase === "row-done") {
