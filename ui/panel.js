@@ -65,6 +65,43 @@
 
   $("#closeBtn").addEventListener("click", () => sendCmd({ type: "ml:cmd:toggle-panel" }));
 
+  // ---- drag the whole panel by its header -----------------------------------
+  (function setupDrag() {
+    const header = document.querySelector("header");
+    if (!header) return;
+    header.style.cursor = "move";
+    header.title = "Drag to move • double-click to reset position";
+    let dragging = false, lastX = 0, lastY = 0;
+    header.addEventListener("pointerdown", (e) => {
+      if (e.target.closest("button")) return; // let the close button work
+      dragging = true;
+      lastX = e.screenX;
+      lastY = e.screenY;
+      try { header.setPointerCapture(e.pointerId); } catch (_) {}
+      window.parent.postMessage({ source: "maxload-panel", type: "drag-start" }, "*");
+      e.preventDefault();
+    });
+    header.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const dx = e.screenX - lastX;
+      const dy = e.screenY - lastY;
+      lastX = e.screenX;
+      lastY = e.screenY;
+      if (dx || dy) window.parent.postMessage({ source: "maxload-panel", type: "drag-move", dx, dy }, "*");
+    });
+    const end = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      try { header.releasePointerCapture(e.pointerId); } catch (_) {}
+    };
+    header.addEventListener("pointerup", end);
+    header.addEventListener("pointercancel", end);
+    header.addEventListener("dblclick", (e) => {
+      if (e.target.closest("button")) return;
+      window.parent.postMessage({ source: "maxload-panel", type: "reset-pos" }, "*");
+    });
+  })();
+
   // ---- TEACH (record + auto-bind) -------------------------------------------
   let teachColumns = [];
 

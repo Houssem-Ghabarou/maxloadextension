@@ -53,6 +53,37 @@
     else show();
   }
 
+  // ---- dragging (the panel header drives this via postMessage) --------------
+  function anchorTopLeft() {
+    if (!host) return;
+    const r = host.getBoundingClientRect();
+    host.style.left = r.left + "px";
+    host.style.top = r.top + "px";
+    host.style.right = "auto";
+    host.style.bottom = "auto";
+  }
+  function moveBy(dx, dy) {
+    if (!host) return;
+    const r = host.getBoundingClientRect();
+    // keep at least a corner on-screen
+    const left = Math.max(-r.width + 90, Math.min(r.left + dx, window.innerWidth - 60));
+    const top = Math.max(0, Math.min(r.top + dy, window.innerHeight - 34));
+    host.style.left = left + "px";
+    host.style.top = top + "px";
+  }
+
+  window.addEventListener("message", (ev) => {
+    const d = ev.data;
+    if (!d || d.source !== "maxload-panel" || !visible) return;
+    if (d.type === "drag-start") anchorTopLeft();
+    else if (d.type === "drag-move") moveBy(d.dx || 0, d.dy || 0);
+    else if (d.type === "reset-pos") {
+      host.style.left = "auto";
+      host.style.right = "16px";
+      host.style.top = "16px";
+    }
+  });
+
   MaxLoad.panel = { show, hide, toggle, get visible() { return visible; } };
 
   // Auto-show once on injection so the user sees MaxLoad is active. Comment out
