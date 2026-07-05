@@ -130,12 +130,18 @@
     if (!isControl(ev.target)) return;
     addOrUpdateFieldStep(ev.target, true);
   }
+  // Broad set of "clickable" things so ANY flow is captured — toolbar icons,
+  // tabs, links, menu items, tree nodes (relations), table rows, anything with
+  // an onclick. Fields themselves are handled by focus/change, not here.
+  const CLICKABLE =
+    "button, a, input[type=button], input[type=submit], input[type=image], " +
+    "[role=button], [role=tab], [role=menuitem], [role=treeitem], [role=option], [role=gridcell], " +
+    "[onclick], img, [id*='_ti'], tr[onclick], td[onclick], .tablerow, [class*='menuitem'], [class*='treenode']";
+
   function onClick(ev) {
     if (!state.recording) return;
     if (ev.target.closest && ev.target.closest("#maxload-panel-host, #maxload-bind-overlay")) return;
-    const el = ev.target.closest(
-      "button, a, input[type=button], input[type=submit], [role=button], [role=tab], img, td[onclick]"
-    );
+    const el = ev.target.closest(CLICKABLE);
     if (!el || isControl(el)) return; // fields handled by focus/change
     addClickStep(el);
   }

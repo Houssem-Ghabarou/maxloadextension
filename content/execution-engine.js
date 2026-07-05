@@ -608,8 +608,10 @@
           const e = await MaxLoad.errorWatcher.handleEntryPrompt(rowNum, meta.screen);
           if (e.outcome === "abort") return { status: "abort", message: e.message };
           if (e.outcome === "fail") return { status: "failed", message: e.message };
-          const ready = await verifyEntry(workflow);
-          if (!ready) return { status: "failed", transient: true, message: "record form did not open after New" };
+          // best-effort wait for the form to render; don't hard-fail here — the
+          // field steps retry and report precisely (works for record-New AND a
+          // "new row" inside a relation/table, which has no top-level form).
+          await verifyEntry(workflow);
         } else {
           h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
           if (h.outcome === "abort") return { status: "abort", message: h.message };

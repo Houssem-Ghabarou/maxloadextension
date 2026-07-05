@@ -47,11 +47,14 @@
         return { el: dlg || msg, doc, text: msg.textContent.trim(), buttons: buttonsIn(dlg || msg) };
       }
     }
-    // Fallback: any other visible dialog that has buttons.
+    // Fallback: ONLY Maximo's own message box (errors / confirms / save prompts).
+    // We deliberately do NOT treat arbitrary [role=dialog] as a popup to dismiss —
+    // interactive dialogs (lookups, Change Status, Route Workflow, relation
+    // sub-records, etc.) are part of the recorded flow and must be left alone.
     for (const doc of docs) {
       let els;
       try {
-        els = doc.querySelectorAll("[role=dialog], [role=alertdialog], [id^='msgbox-dialog']");
+        els = doc.querySelectorAll("[id^='msgbox-dialog'], [id='errorDialog'], [id$='_msgbox']");
       } catch (_) {
         continue;
       }
