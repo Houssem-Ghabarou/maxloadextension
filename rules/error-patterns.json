@@ -1,0 +1,65 @@
+{
+  "_doc": "Known modal text patterns -> classification. Matching is case-insensitive substring. Adding a newly-seen message is a data change, not a code change. Keep confirmAllowList CONSERVATIVE: only Yes/No dialogs you have verified are always safe to auto-accept belong here; everything else defaults to No + fail-and-log.",
+
+  "validationError": [
+    "required",
+    "is required",
+    "invalid value",
+    "must be",
+    "cannot be blank",
+    "cannot be empty",
+    "is not valid",
+    "value is not allowed",
+    "enter a value",
+    "bmxaa4183",
+    "bmxaa4127"
+  ],
+
+  "businessRule": [
+    "duplicate",
+    "already exists",
+    "record already",
+    "not allowed",
+    "cannot change",
+    "violat",
+    "constraint",
+    "bmxaa",
+    "bmxae"
+  ],
+
+  "session": [
+    "session",
+    "session expired",
+    "session has expired",
+    "logged out",
+    "please log in",
+    "log in again",
+    "login",
+    "timed out",
+    "timeout",
+    "your session",
+    "session expir",
+    "session a expir",
+    "reconnect",
+    "reconnecter",
+    "connexion",
+    "déconnect",
+    "deconnect",
+    "veuillez vous connecter",
+    "bmxaa7901"
+  ],
+
+  "serverError": [
+    "stack trace",
+    "exception",
+    "system error",
+    "unexpected error",
+    "internal server",
+    "null pointer",
+    "servlet",
+    "http status 500"
+  ],
+
+  "confirmAllowList": [
+  ]
+}

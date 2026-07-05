@@ -1,0 +1,7 @@
+[
+  { "trigger": "spinner-visible", "action": "wait-for-disappear", "note": "Maximo longop/wait indicator — pause until it clears." },
+  { "trigger": "dialog:confirm", "action": "click-ok", "note": "Generic single-button confirm." },
+  { "trigger": "dialog:lookup", "action": "type-search-select-first", "note": "Lookup chooser popup — type the search term and pick the first row." },
+  { "trigger": "field:required-empty-on-save", "action": "abort-row-log-error", "note": "A required field is empty at save time — fail the row, don't guess." },
+  { "trigger": "field:readonly", "action": "skip-and-log-warning", "note": "Read-only/disabled field — skip writing, log a warning." }
+]

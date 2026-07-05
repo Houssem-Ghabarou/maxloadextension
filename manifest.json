@@ -1,0 +1,77 @@
+{
+  "manifest_version": 3,
+  "name": "MaxLoad — Maximo Excel Automation",
+  "version": "0.1.0",
+  "description": "Teach MaxLoad a Maximo business process once (Create & Update), then execute it reliably from Excel — deterministic matching with an AI fallback, entirely in the browser.",
+  "permissions": [
+    "storage",
+    "scripting",
+    "activeTab",
+    "tabs",
+    "debugger"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "MaxLoad — click to toggle panel",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "run_at": "document_idle",
+      "js": [
+        "content/namespace.js",
+        "content/settle-detector.js",
+        "content/dom-analyzer.js",
+        "content/highlighter.js",
+        "content/cdp-input.js",
+        "content/smart-matcher.js",
+        "content/rule-engine.js",
+        "content/error-watcher.js",
+        "content/recorder.js",
+        "content/binder.js",
+        "engines/learning-cache.js",
+        "engines/resume-engine.js",
+        "engines/excel-engine.js",
+        "engines/ai-recovery.js",
+        "content/execution-engine.js",
+        "content/frame-bridge.js",
+        "content/panel-inject.js"
+      ]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "ui/panel.html",
+        "ui/panel.js",
+        "ui/panel.css",
+        "ui/workflow-editor.html",
+        "ui/workflow-editor.js",
+        "rules/default-rules.json",
+        "rules/error-patterns.json",
+        "lib/xlsx.full.min.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

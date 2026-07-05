@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MaxLoad</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <header>
+    <div class="logo">ML</div>
+    <h1>MaxLoad</h1>
+    <span id="conn" class="chip">connecting…</span>
+    <button class="close" id="closeBtn" title="Hide panel">×</button>
+  </header>
+
+  <nav>
+    <button data-tab="record" class="active">Teach</button>
+    <button data-tab="run">Run</button>
+    <button data-tab="workflows">Workflows</button>
+    <button data-tab="logs">Logs</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+
+  <main>
+    <!-- (secondary) point & click manual binding — not in nav, reachable programmatically -->
+    <section class="tab" id="tab-bind">
+      <h2>1 · Load your Excel</h2>
+      <label class="field">
+        <span>Pull the column names from your data file (.xlsx or .csv)</span>
+        <input type="file" id="bindFile" accept=".xlsx,.xls,.csv" />
+      </label>
+      <label class="field">
+        <span>Columns (auto-filled from the file — edit if needed)</span>
+        <input type="text" id="bindCols" placeholder="description, location, assetnum, priority" />
+      </label>
+      <div class="row">
+        <button class="btn" id="bindBuildRows">Show columns</button>
+      </div>
+
+      <h2 style="margin-top:14px">2 · Buttons &amp; search <span class="muted" style="text-transform:none">— let MaxLoad find them</span></h2>
+      <div class="row">
+        <button class="btn primary" id="bindAutoDetect">🔍 Auto-detect New / Save / Search</button>
+      </div>
+      <ul class="list" id="bindSpecial"></ul>
+
+      <h2 style="margin-top:10px">3 · Bind each field <span class="muted" style="text-transform:none">— click Bind, then click the input</span></h2>
+      <p class="hint" id="bindArmHint">Open your Maximo screen. Click a <b>Bind</b> button here, then click the matching input on the page — <b>no typing needed</b>. <kbd>Esc</kbd> cancels a pick.</p>
+      <ul class="list" id="bindFields"></ul>
+
+      <h2 style="margin-top:14px">4 · Save</h2>
+      <label class="field">
+        <span>Workflow name</span>
+        <input type="text" id="bindName" placeholder="Work Order Tracking — bound" />
+      </label>
+      <div class="row">
+        <button class="btn" id="bindDryRun">Test resolve</button>
+        <button class="btn primary" id="bindSave">Save binding workflow</button>
+        <span id="bindStatus" class="chip"></span>
+      </div>
+      <ul class="list log" id="bindFeed"></ul>
+    </section>
+
+    <!-- TEACH — MaxLoad follows what you do, then you edit -->
+    <section class="tab active" id="tab-record">
+      <h2>1 · Load your Excel</h2>
+      <label class="field">
+        <input type="file" id="recFile" accept=".xlsx,.xls,.csv" />
+      </label>
+      <p class="hint" id="recCols">Load your data file so its columns appear in the mapping menus below.</p>
+
+      <h2>2 · Record — do it once</h2>
+      <label class="field">
+        <span>This recording is for…</span>
+        <select id="recAction">
+          <option value="CREATE">CREATE — new records</option>
+          <option value="UPDATE">UPDATE — search &amp; edit existing</option>
+        </select>
+      </label>
+      <div class="row">
+        <button class="btn primary" id="recStart">● Start recording</button>
+        <button class="btn" id="recStop" disabled>■ Stop &amp; save</button>
+        <span id="recState" class="chip">idle</span>
+      </div>
+      <p class="hint">MaxLoad <b>follows every action</b>: click New, click into each field (no typing needed), navigate/search, click Save. Each becomes a step below.</p>
+
+      <h2>3 · Edit the steps <span class="muted" style="text-transform:none">— map columns, delete extras</span></h2>
+      <p class="hint">For each <b>field</b> step, choose which Excel column fills it (default: don't fill). Delete any step you don't want with ✕. Reorder with ▲▼. This exact sequence replays for every row.</p>
+      <ul class="list" id="recSteps"></ul>
+    </section>
+
+    <!-- RUN -->
+    <section class="tab" id="tab-run">
+      <div class="row" style="margin-bottom:6px">
+        <span id="stateLine" class="chip" style="flex:1;text-align:left">📍 where am I?</span>
+        <button class="btn" id="stateRefresh" style="padding:3px 8px">↻</button>
+      </div>
+      <label class="field">
+        <span>Workflow</span>
+        <select id="runWorkflow"></select>
+      </label>
+      <div id="scenario" class="card" style="display:none"></div>
+      <label class="field">
+        <span>Data file (.xlsx or .csv)</span>
+        <input type="file" id="runFile" accept=".xlsx,.xls,.csv" />
+      </label>
+      <p class="hint" id="fileHint">Columns: <code>_action</code>, <code>_key_field</code>, <code>_key_value</code> (UPDATE), plus one column per attribute. Empty cells are never written.</p>
+      <div id="preview"></div>
+      <div class="row">
+        <button class="btn" id="dryRun">Dry-run</button>
+        <button class="btn" id="runOne" disabled>▶ Run 1 row (watch)</button>
+        <button class="btn primary" id="runStart" disabled>▶▶ Run all</button>
+        <button class="btn danger" id="runCancel" disabled>Cancel</button>
+      </div>
+      <div class="progress"><i id="progBar"></i></div>
+      <div id="progText" class="hint"></div>
+      <div class="row" id="resultRow" style="display:none">
+        <button class="btn" id="dlResults">⬇ Results CSV</button>
+        <button class="btn" id="dlFailed">⬇ Failed rows (re-runnable)</button>
+      </div>
+      <ul class="list log" id="runFeed"></ul>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" id="teachModal" style="flex:1">🔧 Teach the modal on screen</button>
+      </div>
+      <p class="hint">If MaxLoad ever mishandles a popup: leave it open, click this, and tell MaxLoad which button to press and whether that row failed or is fine. It remembers that modal forever.</p>
+    </section>
+
+    <!-- WORKFLOWS -->
+    <section class="tab" id="tab-workflows">
+      <h2>Saved workflows</h2>
+      <div id="wfList"></div>
+      <p class="hint">Open the editor to view/edit the recorded step JSON.</p>
+    </section>
+
+    <!-- LOGS -->
+    <section class="tab" id="tab-logs">
+      <div class="row">
+        <h2 style="flex:1;margin:0">Run log</h2>
+        <button class="btn" id="logRefresh">Refresh</button>
+        <button class="btn" id="logExport">Export</button>
+        <button class="btn danger" id="logClear">Clear</button>
+      </div>
+      <div class="log" id="logView"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="tab" id="tab-settings">
+      <h2>AI fallback provider</h2>
+      <label class="field">
+        <span>Provider</span>
+        <select id="setProvider">
+          <option value="xai">xAI (Grok) — api.x.ai</option>
+          <option value="groq">Groq — api.groq.com (fast Llama etc.)</option>
+          <option value="custom">Custom (OpenAI-compatible)</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>API key <span class="muted">(stored locally, billed per token)</span></span>
+        <input type="password" id="setKey" placeholder="xai-… or gsk_…" />
+      </label>
+      <label class="field">
+        <span>Model <span class="muted" id="modelHint"></span></span>
+        <input type="text" id="setModel" placeholder="(provider default)" />
+      </label>
+      <label class="field" id="endpointWrap" style="display:none">
+        <span>Custom endpoint <span class="muted">(full chat/completions URL)</span></span>
+        <input type="text" id="setEndpoint" placeholder="https://…/v1/chat/completions" />
+      </label>
+      <label class="field row" style="gap:6px;align-items:center">
+        <input type="checkbox" id="setAiEnabled" checked style="width:auto" />
+        <span style="margin:0">Enable AI recovery when confidence &lt; threshold</span>
+      </label>
+      <div class="row">
+        <button class="btn primary" id="setSave">Save settings</button>
+        <span id="setStatus" class="chip"></span>
+      </div>
+      <h2 style="margin-top:16px">Knowledge base</h2>
+      <table class="stat" id="cacheStat"><tbody></tbody></table>
+      <div class="row" style="margin-top:8px">
+        <button class="btn danger" id="cacheClear">Clear cache</button>
+      </div>
+
+      <h2 style="margin-top:16px">Learned modal rules</h2>
+      <div id="modalRules"></div>
+      <div class="row" style="margin-top:6px">
+        <button class="btn" id="modalRulesExport">Export rules</button>
+        <button class="btn danger" id="modalRulesClear">Clear all</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- SheetJS (bundled) enables .xlsx parsing; panel.js falls back to CSV if absent. -->
+  <script src="../lib/xlsx.full.min.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

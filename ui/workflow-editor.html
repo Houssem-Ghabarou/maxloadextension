@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MaxLoad — Workflow Editor</title>
+  <link rel="stylesheet" href="panel.css" />
+  <style>
+    body { height: auto; min-height: 100%; }
+    main { max-width: 860px; margin: 0 auto; width: 100%; }
+    #json { width: 100%; min-height: 60vh; font: 12px/1.5 ui-monospace, Consolas, monospace; }
+    .bar { position: sticky; top: 0; background: #fff; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .err { color: var(--err); }
+    .ok2 { color: var(--ok); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">ML</div>
+    <h1>Workflow Editor</h1>
+  </header>
+  <main>
+    <div class="bar row">
+      <strong id="wfName">—</strong>
+      <span class="spacer"></span>
+      <button class="btn" id="format">Format JSON</button>
+      <button class="btn" id="export">Export</button>
+      <button class="btn primary" id="save">Save</button>
+      <span id="status" class="chip"></span>
+    </div>
+    <p class="hint">Edit the intent-based step JSON. See <code>storage/schema.md</code> for the shape. Fields: <code>set-field.target</code> {label, stableKey, controlType, tabContext}; <code>set-field.column</code> maps to your Excel header.</p>
+    <textarea id="json" spellcheck="false"></textarea>
+  </main>
+  <script src="workflow-editor.js"></script>
+</body>
+</html>

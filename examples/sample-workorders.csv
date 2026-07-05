@@ -1,0 +1,7 @@
+_action,_key_field,_key_value,description,location,assetnum,priority
+CREATE,,,Replace HVAC filter - Bldg A,BLDG-A-ROOF,,3
+CREATE,,,Inspect fire pump weekly,PUMP-ROOM-1,PUMP-100,2
+CREATE,,,Lubricate conveyor bearings,LINE-3,CONV-3,4
+UPDATE,wonum,1051,Updated: recalibrate sensor,,,1
+UPDATE,wonum,1052,,MAINT-SHOP,,
+UPDATE,wonum,1053,Close out - work completed,,,

@@ -1,0 +1,94 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1c2530;
+  --muted: #6b7785;
+  --line: #e2e8f0;
+  --accent: #1266d6;
+  --accent-d: #0d4fa8;
+  --ok: #1f9d55;
+  --warn: #b7791f;
+  --err: #d64545;
+  --chip: #eef2f7;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%;
+  font: 13px/1.4 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  color: var(--fg); background: var(--bg);
+}
+body { display: flex; flex-direction: column; }
+
+header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, #f8fafc, #eef2f7);
+}
+header .logo {
+  width: 22px; height: 22px; border-radius: 5px;
+  background: var(--accent); color: #fff; font-weight: 700;
+  display: grid; place-items: center; font-size: 12px;
+}
+header h1 { font-size: 14px; margin: 0; flex: 1; }
+header .close { cursor: pointer; color: var(--muted); border: 0; background: none; font-size: 16px; }
+
+nav { display: flex; border-bottom: 1px solid var(--line); background: #fafbfc; }
+nav button {
+  flex: 1; padding: 8px 4px; border: 0; background: none; cursor: pointer;
+  font-size: 12px; color: var(--muted); border-bottom: 2px solid transparent;
+}
+nav button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+main { flex: 1; overflow: auto; padding: 12px; }
+.tab { display: none; }
+.tab.active { display: block; }
+
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+label.field { display: block; margin: 8px 0; font-size: 12px; color: var(--fg); }
+label.field span { display: block; color: var(--muted); margin-bottom: 3px; }
+input[type=text], input[type=password], select, textarea {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit;
+}
+textarea { resize: vertical; min-height: 60px; }
+
+button.btn {
+  padding: 7px 12px; border-radius: 6px; border: 1px solid var(--line);
+  background: #fff; cursor: pointer; font: inherit; color: var(--fg);
+}
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.btn.primary:hover { background: var(--accent-d); }
+button.btn.danger { color: var(--err); border-color: #f2c4c4; }
+button.btn:disabled { opacity: .5; cursor: not-allowed; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row.end { justify-content: flex-end; }
+.spacer { flex: 1; }
+
+.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--chip); font-size: 11px; color: var(--muted); }
+.chip.rec { background: #fdecec; color: var(--err); }
+.chip.ok { background: #e6f6ec; color: var(--ok); }
+
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+.card h3 { margin: 0 0 4px; font-size: 13px; }
+.card .meta { color: var(--muted); font-size: 11px; }
+
+.list { list-style: none; margin: 0; padding: 0; }
+.muted { color: var(--muted); }
+.hint { font-size: 11px; color: var(--muted); margin: 6px 0; }
+
+.progress { height: 8px; background: var(--chip); border-radius: 999px; overflow: hidden; margin: 8px 0; }
+.progress > i { display: block; height: 100%; background: var(--accent); width: 0%; transition: width .2s; }
+
+.log { font: 11px/1.35 ui-monospace, "Cascadia Code", Consolas, monospace; }
+.log .l { padding: 3px 6px; border-bottom: 1px solid #f0f3f7; white-space: pre-wrap; word-break: break-word; }
+.log .l.warn { background: #fff8e6; }
+.log .l.error { background: #fdecec; }
+.log .l .t { color: var(--muted); }
+
+table.stat { width: 100%; border-collapse: collapse; }
+table.stat td { padding: 3px 4px; border-bottom: 1px solid var(--line); }
+table.stat td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+.dot.done { background: var(--ok); }
+.dot.failed { background: var(--err); }
+.dot.pending { background: #cbd5e1; }
+.dot.running { background: var(--accent); }
