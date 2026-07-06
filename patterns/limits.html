@@ -174,7 +174,7 @@
 
   <h2 id="recorder">8. Recorder (Teach) limits</h2>
   <ul>
-    <li>Records <strong>field focus/typing</strong>, <strong>button/tab/link clicks</strong>, and the <strong>Enter</strong> key. It does <strong>not</strong> record Escape or arbitrary key chords.</li>
+    <li>Records a field when you <strong>click into it</strong> (or type in it), plus <strong>button/tab/link clicks</strong> and the <strong>Enter</strong> key. Fields are <strong>not</strong> captured on programmatic / tab / auto focus, and it does not record Escape or key chords.</li>
     <li><strong>Meaningless clicks are filtered:</strong> inline-script wrappers and identity-less containers are skipped, and Maximo grid internals (<code>tempselect</code>, list toggles) are dropped at record time, run time, and dry-run. Other internal controls may need adding to <code>isJunkClick</code>.</li>
     <li>Teaching stores <strong>who</strong> an element is (stable key, label, id/name, tab) — never <strong>where</strong>. Scrolling while teaching has zero effect; coordinates are computed fresh at run time only.</li>
   </ul>

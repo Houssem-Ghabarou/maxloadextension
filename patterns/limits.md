@@ -155,8 +155,9 @@ conservative:
 
 ## 8. Recorder (Teach) limits
 
-- Records **field focus/typing**, **button/tab/link clicks**, and the **Enter**
-  key. It does **not** record Escape or arbitrary key chords.
+- Records a field when you **click into it** (or type in it), plus
+  **button/tab/link clicks** and the **Enter** key. Fields are **not** captured on
+  programmatic / tab / auto focus, and it does not record Escape or key chords.
 - **Meaningless clicks are filtered:** inline-script wrappers and identity-less
   containers are skipped, and Maximo grid internals (`tempselect`, list toggles)
   are dropped at record time, run time, and dry-run. Other internal controls that

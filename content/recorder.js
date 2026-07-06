@@ -2,14 +2,16 @@
  *
  * You demonstrate the process once on the real Maximo screen. MaxLoad FOLLOWS
  * every action in order and turns it into an editable list of steps:
- *   - click a button / tab / link / icon           -> { type:'click' }
- *   - click INTO a field (focus) — no typing needed -> { type:'set-field' }
- *   - type/change a field's value                   -> updates that step's sample
- *   - press Enter (e.g. to submit a search)         -> { type:'key', key:'Enter' }
+ *   - click a button / tab / link / icon             -> { type:'click' }
+ *   - click a field (explicit click, not auto-focus) -> { type:'set-field' }
+ *   - type/change a field's value                    -> updates that step's sample
+ *   - press Enter (e.g. to submit a search)          -> { type:'key', key:'Enter' }
  *
+ * Fields are recorded only on a real user CLICK — never on programmatic/tab
+ * focus or a form auto-focusing on load — so no phantom field steps appear.
  * Meaningless clicks (a wrapper/container with no real label or stable key, or
  * text that is actually inline script) are ignored — only genuine controls are
- * recorded. Field focus/change and Enter are captured as before.
+ * recorded.
  *
  * Then you edit manually in the panel: map each field step to a CSV column
  * (default is "don't fill"), delete steps you don't want, reorder. The recorded
@@ -141,20 +143,23 @@
     broadcast();
   }
 
-  function onFocusIn(ev) {
-    if (!state.recording) return;
-    const el = ev.target;
-    if (!isControl(el) || !MaxLoad.util.isVisible(el)) return;
-    addOrUpdateFieldStep(el, false);
+  /** A fillable field (text/checkbox/select/…) — NOT a button-type input. */
+  function isFieldControl(el) {
+    if (!isControl(el)) return false;
+    if (el.tagName === "INPUT") {
+      const t = (el.getAttribute("type") || "text").toLowerCase();
+      return !["button", "submit", "image", "reset"].includes(t);
+    }
+    return true; // textarea, select, contenteditable, role=textbox/combobox
   }
   function onChange(ev) {
     if (!state.recording) return;
-    if (!isControl(ev.target)) return;
+    if (!isFieldControl(ev.target)) return;
     addOrUpdateFieldStep(ev.target, true);
   }
   // Broad set of "clickable" things so ANY flow is captured — toolbar icons,
   // tabs, links, menu items, tree nodes (relations), table rows, anything with
-  // an onclick. Fields themselves are handled by focus/change, not here.
+  // an onclick. Fillable fields are handled by the click branch below, not here.
   const CLICKABLE =
     "button, a, input[type=button], input[type=submit], input[type=image], " +
     "[role=button], [role=tab], [role=menuitem], [role=treeitem], [role=option], [role=gridcell], " +
@@ -163,8 +168,16 @@
   function onClick(ev) {
     if (!state.recording) return;
     if (ev.target.closest && ev.target.closest("#maxload-panel-host, #maxload-bind-overlay")) return;
+    // an explicit click INTO a fillable field records it — this is the ONLY way
+    // a field is captured now (never on auto/tab focus).
+    const field = ev.target.closest(MaxLoad.dom.CONTROL_SELECTOR);
+    if (field && isFieldControl(field) && MaxLoad.util.isVisible(field)) {
+      addOrUpdateFieldStep(field, false);
+      return;
+    }
+    // otherwise a button / tab / link / icon (incl. button-type inputs)
     const el = ev.target.closest(CLICKABLE);
-    if (!el || isControl(el)) return; // fields handled by focus/change
+    if (!el) return;
     addClickStep(el);
   }
 
@@ -173,7 +186,6 @@
   }
   function attach() {
     eachDoc((doc) => {
-      doc.addEventListener("focusin", onFocusIn, true);
       doc.addEventListener("change", onChange, true);
       doc.addEventListener("click", onClick, true);
       doc.addEventListener("keydown", onKeyDown, true);
@@ -181,7 +193,6 @@
   }
   function detach() {
     eachDoc((doc) => {
-      doc.removeEventListener("focusin", onFocusIn, true);
       doc.removeEventListener("change", onChange, true);
       doc.removeEventListener("click", onClick, true);
       doc.removeEventListener("keydown", onKeyDown, true);
