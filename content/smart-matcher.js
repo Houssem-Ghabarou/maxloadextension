@@ -26,6 +26,19 @@
   // "-tb"/"-pb"/"tb2" would otherwise make every textbox look identical.
   const CTRL_SUFFIX = /^(tb|tbb|pb|cb|lb|mb|hb|rb|chk|ta|img|image|txt|tab|value|input)\d*(_image|_anchor|_input)?$/i;
 
+  // Maximo grid internals (the per-row select control "tempselect", list-toggle
+  // helpers) get captured as clicks but are noise that makes replay misfire.
+  // Recognized here so the recorder skips capturing them AND the executor skips
+  // replaying any that were recorded before this filter existed.
+  const JUNK_CLICK_RE = /tempselect|listtoggle/i;
+  function isJunkClick(binding) {
+    if (!binding) return false;
+    const hay = [binding.stableKey, binding.id, binding.name, binding.text, binding.label]
+      .filter(Boolean)
+      .join(" ");
+    return JUNK_CLICK_RE.test(hay);
+  }
+
   /** Return the key only if it carries real meaning, else null. */
   function meaningfulKey(str) {
     if (!str) return null;
@@ -164,5 +177,5 @@
     return { best, ranked: ranked.slice(0, 5), decision, activeCtxs };
   }
 
-  MaxLoad.matcher = { match, scoreCandidate, getStableKey, meaningfulKey, THRESHOLD, W };
+  MaxLoad.matcher = { match, scoreCandidate, getStableKey, meaningfulKey, isJunkClick, THRESHOLD, W };
 })();

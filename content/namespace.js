@@ -39,6 +39,36 @@
       .replace(/\s+/g, " ")
       .toLowerCase();
 
+  /**
+   * Visible text of an element for use as a label — EXCLUDES the source of any
+   * <script>/<style>/<noscript> descendant (plain `.textContent` leaks inline JS
+   * like "if(browserSupportsLocalStorage()){…}" into captured step labels when a
+   * clicked wrapper happens to contain a script). Whitespace-collapsed, clamped.
+   */
+  util.elementText = function (el, maxLen) {
+    if (!el || !el.ownerDocument) return "";
+    let out = "";
+    try {
+      const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+        acceptNode(n) {
+          const p = n.parentNode;
+          return p && /^(script|style|noscript)$/i.test(p.nodeName)
+            ? NodeFilter.FILTER_REJECT
+            : NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      let n;
+      while ((n = walker.nextNode())) {
+        out += n.nodeValue + " ";
+        if (out.length > 400) break; // enough to label with; don't walk huge subtrees
+      }
+    } catch (_) {
+      out = el.textContent || "";
+    }
+    out = out.replace(/\s+/g, " ").trim();
+    return maxLen ? out.slice(0, maxLen) : out;
+  };
+
   /** Levenshtein-based similarity 0..1 for fuzzy label comparison. */
   util.similarity = function (a, b) {
     a = util.normLabel(a);

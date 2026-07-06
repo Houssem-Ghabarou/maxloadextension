@@ -5,6 +5,11 @@
  *   - click a button / tab / link / icon           -> { type:'click' }
  *   - click INTO a field (focus) — no typing needed -> { type:'set-field' }
  *   - type/change a field's value                   -> updates that step's sample
+ *   - press Enter (e.g. to submit a search)         -> { type:'key', key:'Enter' }
+ *
+ * Meaningless clicks (a wrapper/container with no real label or stable key, or
+ * text that is actually inline script) are ignored — only genuine controls are
+ * recorded. Field focus/change and Enter are captured as before.
  *
  * Then you edit manually in the panel: map each field step to a CSV column
  * (default is "don't fill"), delete steps you don't want, reorder. The recorded
@@ -80,30 +85,47 @@
   }
 
   // ---- click steps (buttons, tabs, links, icons) ----------------------------
+  /** Stray inline script / code text that must never become a step label. */
+  function looksLikeCode(s) {
+    return /[{};]|=>|\bfunction\b|\bvar\b|\bif\s*\(/.test(s || "");
+  }
+
   function addClickStep(el) {
-    const text = (
-      el.textContent || el.value || el.getAttribute("alt") || el.getAttribute("title") || el.getAttribute("aria-label") || ""
+    let text = (
+      MaxLoad.util.elementText(el, 60) ||
+      el.value || el.getAttribute("alt") || el.getAttribute("title") || el.getAttribute("aria-label") || ""
     ).trim().slice(0, 60);
+    if (looksLikeCode(text)) text = ""; // don't label a step with stray script/code
+
     const norm = MaxLoad.util.normLabel(text);
     let role = "button:other";
     if (/^save/.test(norm)) role = "button:save";
     else if (/^(new|insert|add|create)/.test(norm) || norm === "+") role = "button:new";
     const binding = captureBinding(role, el);
-    if (!binding.stableKey && !binding.id && !text) return;
+
+    // Maximo grid internals (row-select "tempselect", list toggles) get captured
+    // as clicks but are noise that makes replay misfire — never record them.
+    if (MaxLoad.matcher.isJunkClick({ ...binding, text: text || binding.text })) return;
+
+    // Only record clicks with a REAL identity — a human label OR a meaningful
+    // stable key. This drops the meaningless container/script clicks (no label,
+    // just a volatile Maximo id) that appeared as junk steps.
+    const meaningfulKey = MaxLoad.matcher.meaningfulKey(binding.stableKey);
+    if (!text && !meaningfulKey) return;
 
     const step = { id: MaxLoad.util.uid(), type: "click", binding, text };
     const last = state.steps[state.steps.length - 1];
     if (last && last.type === "click" && sameBinding(last.binding, binding) && last.text === text) return; // dedupe
     state.steps.push(step);
-    MaxLoad.log("teach: click " + text);
+    MaxLoad.log("teach: click " + (text || binding.stableKey));
     broadcast();
   }
 
-  // ---- key steps (Enter to submit a search, Escape to close, …) -------------
+  // ---- key steps (only Enter — e.g. to submit a search) ---------------------
   function onKeyDown(ev) {
     if (!state.recording) return;
     const key = ev.key;
-    if (key !== "Enter" && key !== "Escape") return; // only meaningful action keys
+    if (key !== "Enter") return; // Enter is the only recorded key
     const el = ev.target;
     const binding = isControl(el) ? captureBinding("field", el) : null;
     state.steps.push({

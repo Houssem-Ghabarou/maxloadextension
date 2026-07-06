@@ -593,6 +593,13 @@
       if (h.outcome === "fail") return { status: "failed", message: h.message };
 
       if (step.type === "click" || isSaveStep(step)) {
+        // skip Maximo grid noise (row-select "tempselect", list toggles) that
+        // was recorded before the recorder filtered it — replaying it misfires.
+        if (step.type === "click" && !isSaveStep(step) &&
+            MaxLoad.matcher.isJunkClick({ ...(step.binding || {}), text: step.text })) {
+          reportStep(rowNum, idx, "skip", (step.text || (step.binding && step.binding.stableKey) || "click") + " (grid noise)", "skipped");
+          continue;
+        }
         const save = isSaveStep(step);
         const rb = await resolveStepButton(step, meta);
         if (!rb.el)
@@ -780,6 +787,10 @@
       for (let i = 0; i < steps.length; i++) {
         const s = steps[i];
         if (s.type === "click") {
+          if (MaxLoad.matcher.isJunkClick({ ...(s.binding || {}), text: s.text })) {
+            results.push({ step: `${i + 1}. click “${s.text || (s.binding && s.binding.stableKey)}” — grid noise (skipped)`, found: true, via: "skipped", score: 0, muted: true });
+            continue;
+          }
           const el = MaxLoad.binder.locateButton(s.binding) || (s.text && MaxLoad.dom.findButton(s.text));
           results.push({ step: `${i + 1}. click “${s.text || s.binding.stableKey}”`, found: !!el, via: "binding", score: el ? 100 : 0 });
         } else if (s.type === "set-field") {
