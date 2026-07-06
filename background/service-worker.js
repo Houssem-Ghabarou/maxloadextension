@@ -236,17 +236,29 @@ async function cdpKey(tabId, key, code, vk, modifiers) {
   await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...base });
 }
 
-async function cdpType(tabId, x, y, text, commitKey) {
-  await ensureAttached(tabId);
-  // focus the field with a real click
-  await cdpClick(tabId, x, y);
-  // select existing content (Ctrl+A) then overwrite via trusted text insertion
+// select existing content (Ctrl+A + Delete) then overwrite via trusted text
+// insertion, and optionally commit with Tab/Enter — all on the FOCUSED element.
+async function cdpClearInsert(tabId, text, commitKey) {
   await cdpKey(tabId, "a", "KeyA", 65, 2 /* Ctrl */);
   await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 });
   await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 });
   if (text) await cdp(tabId, "Input.insertText", { text: String(text) });
   if (commitKey === "tab") await cdpKey(tabId, "Tab", "Tab", 9);
   else if (commitKey === "enter") await cdpKey(tabId, "Enter", "Enter", 13);
+}
+
+async function cdpType(tabId, x, y, text, commitKey) {
+  await ensureAttached(tabId);
+  await cdpClick(tabId, x, y); // focus the field with a real click at (x,y)
+  await cdpClearInsert(tabId, text, commitKey);
+}
+
+// Coordinate-free typing: the content script has already focused the element in
+// JS (el.focus()), so we insert trusted text straight into the focused node —
+// no pixel math, immune to scroll position / off-screen fields / mouse movement.
+async function cdpTypeFocused(tabId, text, commitKey) {
+  await ensureAttached(tabId);
+  await cdpClearInsert(tabId, text, commitKey);
 }
 
 // ---- log ring ---------------------------------------------------------------
@@ -298,6 +310,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const tabId = sender.tab && sender.tab.id;
       if (tabId == null) { sendResponse({ ok: false, error: "no tab" }); return true; }
       cdpType(tabId, msg.x, msg.y, msg.text, msg.commitKey).then(
+        () => sendResponse({ ok: true }),
+        (e) => sendResponse({ ok: false, error: String(e && e.message ? e.message : e) })
+      );
+      return true;
+    }
+
+    case "ml:cdp:type-focused": {
+      const tabId = sender.tab && sender.tab.id;
+      if (tabId == null) { sendResponse({ ok: false, error: "no tab" }); return true; }
+      cdpTypeFocused(tabId, msg.text, msg.commitKey).then(
         () => sendResponse({ ok: true }),
         (e) => sendResponse({ ok: false, error: String(e && e.message ? e.message : e) })
       );

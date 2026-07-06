@@ -46,20 +46,25 @@ Recorder ──► Workflow JSON (intent-based, action=CREATE|UPDATE)
   clean base** → retry transient failures. On a row error: skip + log the exact
   Maximo message; session/server death aborts the run. See `runRowTxn` in
   [`content/execution-engine.js`](content/execution-engine.js).
-- **Intent-based recording** — captures a field's label + *stable key* (Maximo's
-  volatile `m<hash>_` prefix and `_12` row suffixes stripped), not brittle
-  selectors. See [`content/recorder.js`](content/recorder.js).
+- **Teach = record + bind in one pass** — as you demonstrate the flow, every
+  field / button / Enter step is captured with its *binding* (visible label +
+  *stable key* with Maximo's volatile `m<hash>_` prefix and `_12` row suffixes
+  stripped, plus id/name/tab context) — not brittle selectors. So recorded steps
+  resolve deterministically at run time (label-first), falling to matcher / AI
+  only when a binding doesn't resolve. See [`content/recorder.js`](content/recorder.js).
 - **Confidence scoring** — weighted signals (label 40 / aria-title 25 / name-id
   20 / tab-context 10 / control-type 5). ≥70 execute, 40–69 rule-assist, <40 AI.
   See [`content/smart-matcher.js`](content/smart-matcher.js).
 - **Iframe-aware** — walks the top document plus every same-origin iframe,
   scoped to the active tab/section. See [`content/dom-analyzer.js`](content/dom-analyzer.js).
-- **Error Watcher** — a standalone global observer that detects Maximo's blocking
-  modals *by pattern*, classifies them (validation / business-rule / session /
-  server / Yes-No confirm) and acts conservatively: unknown Yes/No dialogs
-  default to **No + fail-the-row**; session dialogs **abort the run**. See
-  [`content/error-watcher.js`](content/error-watcher.js) and
-  [`rules/error-patterns.json`](rules/error-patterns.json).
+- **Modal handler (teach-first)** — a standalone global observer detects Maximo's
+  message-box popups. A rule *you taught* for that popup wins first; otherwise it
+  acts conservatively: session/login → **abort the run**, Yes/No/Cancel confirm →
+  press **No** + continue (never auto-commit), single OK/Close error → **dismiss +
+  fail the row**. You can **teach any popup live during a run** — which button to
+  press and whether the row should fail / continue / abort, scoped to that message
+  or to any popup with the same buttons. See
+  [`content/error-watcher.js`](content/error-watcher.js).
 - **Settle detection** — never a fixed delay; `MutationObserver` debounce + busy
   indicator + retrying lookups. See [`content/settle-detector.js`](content/settle-detector.js).
 - **Learning cache** — keyed by `(tenant, app, screen, fieldStableKey)` with a
@@ -85,35 +90,47 @@ row, so it can't blank fields you didn't intend to change. Sample:
 
 ## Using it
 
-There are two ways to teach a process. **Binding is the recommended one** —
-it's deterministic (no label guessing) and directly fixes "field unresolved"
-misses, because you point at the real element and MaxLoad stores its stable key.
+You teach a process by **demonstrating it once — teaching and binding happen at
+the same time**. As you act on the real Maximo screen, MaxLoad captures each step
+*and* its binding (the element's stable key + label), so at run time it resolves
+every step deterministically, not by guessing.
 
-### A) Bind (point & click — recommended)
-1. **Bind** tab → load your Excel/CSV so MaxLoad pulls the column names (or type
-   them in).
-2. Open your Maximo screen. Click **Build field list**, then for each row click
-   **Bind** and click the matching field/button on the page (a blue highlight
-   follows your cursor; <kbd>Esc</kbd> cancels a pick).
-3. Bind the **New** button, **Save** button, and — for updates — the **Key/search
-   field**. Fields you bind resolve at confidence **100** on every row.
-4. Name it → **Save binding workflow**. CREATE vs UPDATE is decided per row by the
-   `_action` column — one binding set handles both.
+### A) Teach — record + auto-bind (recommended)
+1. **Teach** tab → load your Excel/CSV so MaxLoad pulls the column names → pick
+   CREATE or UPDATE → **Start**.
+2. Perform the flow once on the Maximo screen: click **New**, type in fields,
+   press **Enter** to search, click a record, edit fields, click **Save**.
+   MaxLoad follows along, listing each step and capturing its binding as it goes.
+3. **Stop**, then map each field step to its Excel column (default is "don't
+   fill"), reorder or delete steps, and name it. The sequence replays per row,
+   injecting each row's column value into its mapped field.
 
-### B) Record (demonstrate the flow)
-1. **Record** tab → pick CREATE or UPDATE → *Start recording* → perform the flow
-   once → *Stop & save*. Falls back to fuzzy matching + AI at run time.
+### B) Bind — point & click (precise / manual)
+1. **Bind** tab → load your file (or type column names) → **Build field list**.
+2. For each row click **Bind**, then click the matching field/button on the page
+   (a blue highlight follows your cursor; <kbd>Esc</kbd> cancels). Bind the
+   **New** button, **Save** button, and — for updates — the **Key/search field**.
+3. Name it → **Save binding workflow**. Bound elements resolve at confidence
+   **100** on every row; CREATE vs UPDATE is decided per row by `_action`.
+
+### Teach a popup mid-run (errors, confirms, anything)
+When a Maximo popup isn't handled the way you want, **leave it open** and use
+**Teach the modal on screen** (Run tab): choose which button MaxLoad should press
+and whether the row should **fail / continue / abort**, scoped to that exact
+message or to any popup with the same buttons. It applies immediately and is
+saved for next time — manage learned rules in **Settings**.
 
 ### Then run
-2. **Run** tab → pick the workflow, upload your file → *Dry-run match* to verify
-   resolution on the current screen → *Run batch*.
-3. **Logs** tab → full per-row + modal event history (exportable).
-4. **Settings** tab → paste your xAI key to enable the Grok fallback (optional);
-   view/clear the knowledge-base cache.
+1. **Run** tab → pick the workflow, upload your file → **Dry-run** to verify every
+   step resolves on the current screen → **Run batch** (or **Watch row 1** first).
+2. **Logs** tab → full per-row + modal event history (exportable).
+3. **Settings** tab → paste your AI key to enable the Grok/Groq fallback
+   (optional); view/clear the knowledge-base cache and learned modal rules.
 
-> The execution pipeline tries an explicit **binding first**, then cache → smart
-> matcher → rule-assist → AI. So a bound field never depends on label matching,
-> and unbound columns still get the deterministic+AI treatment.
+> At run time each step tries its **binding first** (label-first, deterministic),
+> then cache → smart matcher → rule-assist → AI. So a taught or bound step never
+> depends on fuzzy label matching alone, and low-confidence fields still get the
+> deterministic-plus-AI treatment.
 
 ---
 

@@ -50,17 +50,62 @@
     return null;
   }
 
+  /** Read the current value/text of a field, for read-back verification. */
+  function readVal(el) {
+    if (!el) return "";
+    const role = (el.getAttribute && (el.getAttribute("role") || "").toLowerCase()) || "";
+    if (
+      el.isContentEditable ||
+      (el.getAttribute && (el.getAttribute("contenteditable") || "") === "true") ||
+      (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA" && role === "textbox")
+    ) {
+      return (el.textContent || "").trim();
+    }
+    return String(el.value == null ? "" : el.value).trim();
+  }
+
+  /**
+   * Scroll `el` to a settled position and return trustworthy TOP-LEVEL click
+   * coordinates — or null when the point can't be trusted (off-screen in its
+   * frame, zero-size, or the spot is covered by something else). Returning null
+   * makes the caller act on the exact element reference instead, so a scroll or
+   * layout shift can never send the click/keystroke to a NEIGHBOURING control.
+   */
+  async function stableCoords(el) {
+    try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (_) {}
+    // wait for the scroll + any async re-render to settle, so the point we
+    // measure is where the element actually is at dispatch time — not a fixed
+    // delay that can fire mid-scroll.
+    if (MaxLoad.settle) await MaxLoad.settle.waitForSettle({ quietMs: 120, timeoutMs: 1000 });
+    else await MaxLoad.util.sleep(120);
+
+    const doc = el.ownerDocument;
+    const win = doc.defaultView || window;
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return null;
+    const lx = r.left + r.width / 2;
+    const ly = r.top + r.height / 2;
+    // must be inside its own frame's viewport
+    if (lx < 0 || ly < 0 || lx > win.innerWidth || ly > win.innerHeight) return null;
+    // hit-test: the spot must resolve to the target (or a child/parent of it).
+    // If something else is there, a scroll/overlay moved things — refuse the
+    // coordinate click and let the caller act on the element directly.
+    let hit = null;
+    try { hit = doc.elementFromPoint(lx, ly); } catch (_) {}
+    if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) return null;
+
+    const { x, y } = topCoords(el);
+    if (x <= 0 || y <= 0) return null;
+    return { x, y };
+  }
+
   async function click(el) {
     if (!el) return false;
+    const c = await stableCoords(el);
+    if (!c) return MaxLoad.util.realClick(el); // can't trust the point -> exact element
+    const restore = uncoverPanel(c.x, c.y);
     try {
-      el.scrollIntoView({ block: "center", inline: "center" });
-    } catch (_) {}
-    await MaxLoad.util.sleep(70);
-    const { x, y } = topCoords(el);
-    if (x <= 0 || y <= 0) return MaxLoad.util.realClick(el); // off-screen
-    const restore = uncoverPanel(x, y);
-    try {
-      const r = await chrome.runtime.sendMessage({ type: "ml:cdp:click", x, y });
+      const r = await chrome.runtime.sendMessage({ type: "ml:cdp:click", x: c.x, y: c.y });
       if (r && r.ok) return true;
       MaxLoad.warn("cdp click failed, synthetic fallback: " + (r && r.error));
     } catch (e) {
@@ -71,40 +116,93 @@
     return MaxLoad.util.realClick(el);
   }
 
-  async function type(el, value, commitKey) {
-    if (!el) return false;
+  async function settleShort(timeoutMs) {
+    if (MaxLoad.settle) await MaxLoad.settle.waitForSettle({ quietMs: 120, timeoutMs: timeoutMs || 1200 });
+    else await MaxLoad.util.sleep(150);
+  }
+
+  /** Did `value` end up in THIS element? Lenient — Maximo may reformat/expand. */
+  function didLand(el, before, want) {
+    const after = readVal(el);
+    return after !== before || after === want || (!!want && after.includes(want));
+  }
+
+  function commitField(el) {
     try {
-      el.scrollIntoView({ block: "center" });
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
     } catch (_) {}
-    await MaxLoad.util.sleep(50);
-    const { x, y } = topCoords(el);
-    if (x <= 0 || y <= 0) {
-      MaxLoad.util.realClick(el);
-      syntheticSet(el, value);
-      return false;
-    }
-    const restore = uncoverPanel(x, y);
+    return true;
+  }
+
+  /**
+   * PRIMARY typing path — coordinate-free. Focus the element in JS (the browser
+   * scrolls it into view natively) then insert TRUSTED text into the focused
+   * node via CDP. Because insertText follows focus (not a pixel), this is immune
+   * to scroll position, off-screen fields, overlays, and the mouse moving during
+   * a run. Returns false if focus can't be confirmed, so the caller falls back
+   * to the coordinate path.
+   */
+  async function focusType(el, value, commitKey) {
+    try {
+      el.scrollIntoView({ block: "center", inline: "center" });
+      el.focus({ preventScroll: true });
+    } catch (_) {}
+    const doc = el.ownerDocument;
+    const active = doc.activeElement;
+    const focused =
+      active === el ||
+      (el.contains && active && el.contains(active)) ||
+      (active && active.contains && active.contains(el));
+    if (!focused) return false; // focus didn't land -> use coordinate fallback
     try {
       const r = await chrome.runtime.sendMessage({
-        type: "ml:cdp:type",
-        x,
-        y,
+        type: "ml:cdp:type-focused",
         text: String(value),
         commitKey: commitKey || "tab"
       });
-      if (r && r.ok) {
-        try {
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-          el.dispatchEvent(new Event("blur", { bubbles: true }));
-        } catch (_) {}
-        return true;
-      }
-      MaxLoad.warn("cdp type failed, synthetic fallback: " + (r && r.error));
+      return !!(r && r.ok);
     } catch (e) {
-      MaxLoad.warn("cdp type message failed: " + String(e));
-    } finally {
-      if (restore) restore();
+      MaxLoad.warn("cdp type-focused message failed: " + String(e));
+      return false;
     }
+  }
+
+  async function type(el, value, commitKey) {
+    if (!el) return false;
+    const before = readVal(el);
+    const want = String(value == null ? "" : value).trim();
+
+    // 1. coordinate-free focus + insertText (handles off-screen/scroll/mouse).
+    if (await focusType(el, value, commitKey)) {
+      await settleShort(1200);
+      if (didLand(el, before, want)) return commitField(el);
+    }
+
+    // 2. trusted click at settled + hit-tested coordinates, then type there.
+    const c = await stableCoords(el);
+    if (c) {
+      const restore = uncoverPanel(c.x, c.y);
+      try {
+        await chrome.runtime.sendMessage({
+          type: "ml:cdp:type",
+          x: c.x,
+          y: c.y,
+          text: String(value),
+          commitKey: commitKey || "tab"
+        });
+      } catch (e) {
+        MaxLoad.warn("cdp type message failed: " + String(e));
+      } finally {
+        if (restore) restore();
+      }
+      await settleShort(1200);
+      if (didLand(el, before, want)) return commitField(el);
+    }
+
+    // 3. last resort — set the value straight onto the correct element so it can
+    //    never end up in a NEIGHBOURING field.
+    MaxLoad.warn(`typed value didn't land in "${el.name || el.id || el.tagName}" (scroll/focus drift?) — correcting directly`);
     MaxLoad.util.realClick(el);
     syntheticSet(el, value);
     return false;

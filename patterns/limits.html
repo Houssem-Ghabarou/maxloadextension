@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MaxLoad — Reliability &amp; Known Limits</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --card: #ffffff; --ink: #1a2230; --muted: #5b6675;
+    --line: #e3e7ee; --accent: #1266d6; --ok: #14884a; --warn: #b8730a;
+    --bad: #c0392b; --okbg: #e7f6ec; --warnbg: #fdf3e3; --badbg: #fcecea;
+    --code: #eef1f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e131a; --card: #161d27; --ink: #e7ecf3; --muted: #9aa6b4;
+      --line: #263140; --accent: #5aa0ff; --ok: #47c07d; --warn: #e0a341;
+      --bad: #ec6a5a; --okbg: #12281c; --warnbg: #2a2113; --badbg: #2c1715;
+      --code: #1d2530;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e131a; --card: #161d27; --ink: #e7ecf3; --muted: #9aa6b4;
+    --line: #263140; --accent: #5aa0ff; --ok: #47c07d; --warn: #e0a341;
+    --bad: #ec6a5a; --okbg: #12281c; --warnbg: #2a2113; --badbg: #2c1715;
+    --code: #1d2530;
+  }
+  :root[data-theme="light"] {
+    --bg: #f7f8fa; --card: #ffffff; --ink: #1a2230; --muted: #5b6675;
+    --line: #e3e7ee; --accent: #1266d6; --ok: #14884a; --warn: #b8730a;
+    --bad: #c0392b; --okbg: #e7f6ec; --warnbg: #fdf3e3; --badbg: #fcecea;
+    --code: #eef1f6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 22px 80px; }
+  header.masthead {
+    border-bottom: 1px solid var(--line); padding-bottom: 22px; margin-bottom: 8px;
+  }
+  h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -0.02em; }
+  .lede { color: var(--muted); font-size: 15.5px; margin: 0; max-width: 60ch; }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 12px; }
+  h2 {
+    font-size: 20px; margin: 40px 0 12px; padding-top: 20px;
+    border-top: 1px solid var(--line); letter-spacing: -0.01em;
+  }
+  h3 { font-size: 16px; margin: 22px 0 8px; }
+  p { margin: 10px 0; }
+  a { color: var(--accent); }
+  code {
+    background: var(--code); padding: 1px 6px; border-radius: 5px;
+    font: 13px/1.5 "SF Mono", "Cascadia Code", Consolas, monospace;
+  }
+  ul, ol { padding-left: 22px; }
+  li { margin: 6px 0; }
+  .scroll { overflow-x: auto; margin: 14px 0; border-radius: 10px; border: 1px solid var(--line); }
+  table { width: 100%; border-collapse: collapse; background: var(--card); min-width: 520px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); background: color-mix(in srgb, var(--card) 70%, var(--bg)); }
+  tr:last-child td { border-bottom: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 4px 18px; margin: 14px 0; }
+  .pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+  .ok  { color: var(--ok);  background: var(--okbg); }
+  .warn{ color: var(--warn);background: var(--warnbg); }
+  .bad { color: var(--bad); background: var(--badbg); }
+  .callout { border-left: 4px solid var(--accent); background: var(--card); border-radius: 0 10px 10px 0; padding: 12px 16px; margin: 16px 0; }
+  .callout.warn { border-left-color: var(--warn); }
+  .toc { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 18px 0 4px; font-size: 14px; }
+  .toc a { color: var(--muted); text-decoration: none; }
+  .toc a:hover { color: var(--accent); }
+  footer { margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <h1>MaxLoad — Reliability &amp; Known Limits</h1>
+    <p class="lede">How MaxLoad drives the browser, what it is resilient to, and where its edges are. Read this before running large or unattended batches in production.</p>
+    <div class="meta">Last updated 2026-07-06 · extension v0.1.0</div>
+    <nav class="toc">
+      <a href="#pipeline">1. Input pipeline</a>
+      <a href="#disturb">2. Disturbing a batch</a>
+      <a href="#matching">3. Matching</a>
+      <a href="#ai">4. AI fallback</a>
+      <a href="#modal">5. Modals</a>
+      <a href="#env">6. Iframe &amp; env</a>
+      <a href="#data">7. Data</a>
+      <a href="#recorder">8. Recorder</a>
+      <a href="#practice">9. Practice</a>
+      <a href="#quick">10. Quick ref</a>
+    </nav>
+  </header>
+
+  <h2 id="pipeline">1. How MaxLoad enters data</h2>
+  <p>MaxLoad does <strong>not</strong> blindly fire events at pixels. Typing and clicking take different paths, because Maximo ignores synthetic (<code>isTrusted=false</code>) events for some controls — so real OS-level input is generated through the Chrome DevTools Protocol (CDP), the same mechanism Selenium/Puppeteer use.</p>
+
+  <h3>Typing a field — three tiers, best-first</h3>
+  <p>The engine stops at the first tier whose result it can <strong>verify</strong> landed in the target element (<code>content/cdp-input.js → type()</code>).</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Tier</th><th>Method</th><th>Why it exists</th></tr></thead>
+    <tbody>
+      <tr><td><strong>1. Focus + insertText</strong><br><span class="pill ok">primary</span></td><td><code>el.focus()</code> in JS (browser scrolls it into view natively), then trusted <code>Input.insertText</code> into the <strong>focused</strong> node — no coordinates</td><td>Immune to scroll position, off-screen fields, overlays, and mouse movement, because keystrokes follow <em>focus</em>, not a pixel</td></tr>
+      <tr><td><strong>2. Coordinate CDP</strong><br><span class="pill warn">fallback</span></td><td><code>scrollIntoView</code> → settle → <strong>hit-test</strong> the point → trusted click-to-focus at a verified pixel → type</td><td>Used only if focus can't be confirmed</td></tr>
+      <tr><td><strong>3. Direct set</strong><br><span class="pill warn">last resort</span></td><td>Sets the value straight onto the correct element reference (synthetic)</td><td>Guarantees the value can never land in a <em>neighbouring</em> field</td></tr>
+    </tbody>
+  </table></div>
+  <p>After tiers 1 and 2, a <strong>read-back</strong> (<code>didLand</code>) confirms the value actually reached <em>this</em> element before continuing; if not, it drops to the next tier.</p>
+
+  <h3>Clicking a button (Save / New / tabs)</h3>
+  <p>Still <strong>coordinate-based</strong> CDP (<code>scrollIntoView</code> → settle → hit-test → trusted click), with a synthetic <code>realClick</code> fallback. There is no focus-based equivalent for a trusted toolbar-button click.</p>
+
+  <h2 id="disturb">2. Disturbing a batch in real time</h2>
+  <p>What you can and cannot safely do <strong>while a run is in progress</strong>:</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Action mid-run</th><th>Safe?</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td>Scroll the page</td><td><span class="pill ok">✅ Safe</span></td><td>Typing follows focus, not a pixel — values still land correctly</td></tr>
+      <tr><td>Move the mouse</td><td><span class="pill ok">✅ Safe</span></td><td>Mouse movement never changes <code>document.activeElement</code></td></tr>
+      <tr><td>Switch to another browser tab</td><td><span class="pill ok">✅ Safe</span></td><td>CDP targets the tab, not window focus</td></tr>
+      <tr><td>Field renders off-screen (last field on a long form)</td><td><span class="pill ok">✅ Safe</span></td><td><code>el.focus()</code> scrolls it into view natively before typing</td></tr>
+      <tr><td><strong>Click into a field on the running form</strong></td><td><span class="pill warn">⚠️ Risky</span></td><td>The <strong>target</strong> field self-corrects via read-back, <strong>but</strong> the field you click into can get stray text / be cleared — MaxLoad doesn't clean a field it never targeted</td></tr>
+      <tr><td><strong>Click a button on the running form</strong></td><td><span class="pill warn">⚠️ Risky</span></td><td>Can steal focus / cause a coordinate click to miss; that step may fail (row fails cleanly — not wrong data)</td></tr>
+      <tr><td>Navigate away / open an unrelated Maximo dialog</td><td><span class="pill bad">❌ Unsafe</span></td><td>Breaks the flow for the current row; the run may abort or fail rows</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout"><strong>Rule of thumb:</strong> glancing, scrolling, and moving the mouse are fine. Do <strong>not actively click into the live form</strong> during a run — the field MaxLoad is filling will self-heal, but a field you hijack focus into can be corrupted.</div>
+  <h3>Why the click case can't be fully closed</h3>
+  <p>A physical click changes <code>document.activeElement</code>. If it happens in the millisecond window between MaxLoad focusing field A and the trusted keystrokes arriving, those keystrokes land in field B. Read-back detects that A is empty and re-fills A directly — but B has already received stray input, and B was never a target MaxLoad tracks.</p>
+
+  <h2 id="matching">3. Field matching &amp; resolution limits</h2>
+  <ul>
+    <li><strong>Binding beats matching.</strong> A bound field (Bind tab) resolves at confidence <strong>100</strong>. Recorded/fuzzy fields are scored 0–100 (label 40 / aria-title 25 / name-id 20 / tab 10 / type 5); ≥70 execute, 40–69 rule-assist, &lt;40 AI.</li>
+    <li><strong>Maximo stable keys are often meaningless.</strong> IDs are per-session hashes and the stripped key is frequently just a control suffix (<code>-tb</code>) shared by every textbox. That's why <code>locate()</code> is <strong>label-first</strong> and refuses to act without a real signal — it returns <code>null</code> and retries rather than typing into the wrong box.</li>
+    <li><strong>Ambiguous / duplicate labels</strong> can still mis-resolve. If two visible fields share a caption, fuzzy matching may pick the wrong one — bind those explicitly.</li>
+    <li><strong>Late-rendering fields</strong> are retried up to a timeout but can be missed if Maximo renders them very slowly or behind a tab you didn't record entering.</li>
+  </ul>
+
+  <h2 id="ai">4. AI fallback limits</h2>
+  <ul>
+    <li><strong>Opt-in and billed.</strong> The Grok/xAI (or Groq/custom) fallback only runs when you configure an API key. It's billed per token, not free.</li>
+    <li><strong>Only structure is sent.</strong> Sanitization strips all field <strong>values</strong>; only tag names, labels, and <code>id</code>/<code>name</code>/<code>aria-label</code>/<code>type</code>/<code>role</code> structure go to the model. Live record data is never transmitted.</li>
+    <li><strong>It can still be wrong.</strong> The model returns a single <code>id</code>/<code>name</code>; a wrong pick is acted on and cached per <code>(tenant, app, screen, field)</code> with a 14-day recheck — so it persists until recheck or a manual cache clear (Settings tab).</li>
+  </ul>
+
+  <h2 id="modal">5. Modal / error-dialog limits</h2>
+  <p>The modal handler (<code>content/error-watcher.js</code>) is deliberately narrow and conservative:</p>
+  <ul>
+    <li><strong>Anchors only on Maximo's own message box</strong> (<code>#mb_msg</code>). Interactive dialogs (lookups, Change Status, Route Workflow, relation sub-records) are treated as part of the flow and left alone <strong>by design</strong>.</li>
+    <li><strong>Default outcomes:</strong> session/login → <strong>abort the run</strong>; Yes/No/Cancel confirm → press <strong>No</strong> and continue; single OK/Close error → dismiss and <strong>fail the row</strong>. Override any popup with a <strong>taught rule</strong> (Run tab → "Teach the modal on screen").</li>
+    <li><strong>A popup that won't close</strong> after pressing its button → the run <strong>aborts</strong> rather than looping.</li>
+    <li><strong>Not wired in:</strong> <code>rules/error-patterns.json</code> and the AI error-classifier (<code>classifyError</code>) exist in the codebase but are <strong>not</strong> used by the current handler. Classification is inline (session regex + confirm detection + taught rules).</li>
+  </ul>
+
+  <h2 id="env">6. Iframe &amp; environment limits</h2>
+  <ul>
+    <li><strong>Cross-origin iframes are unreachable.</strong> MaxLoad recurses the top document and every <em>same-origin</em> iframe; a truly cross-origin frame can't be touched from JS (browser security). Maximo classic is typically same-origin.</li>
+    <li><strong>CDP debugger banner.</strong> Attaching shows Chrome's "MaxLoad started debugging this browser" bar. It's cosmetic, but means MaxLoad <strong>cannot share a tab with open DevTools or another debugger</strong> — only one CDP client per tab.</li>
+    <li><strong>Runs in the active tab.</strong> Keep the Maximo tab focused as the active tab for the run.</li>
+    <li><strong>State lives in <code>chrome.storage.local</code></strong> (per-profile, not synced). Clearing browser data / a different profile loses workflows, cache, logs, resume.</li>
+  </ul>
+
+  <h2 id="data">7. Data &amp; transaction limits</h2>
+  <ul>
+    <li><strong>Empty cells are never written.</strong> Protects UPDATE from blanking fields — but you <strong>cannot blank a field on purpose</strong> with an empty cell.</li>
+    <li><strong>No real rollback.</strong> A row is a best-effort sequence, not an atomic transaction. A row that fails after some fields were filled is <strong>not</strong> rolled back (Save wasn't clicked, so usually nothing commits — verify per screen).</li>
+    <li><strong>CREATE verification is heuristic.</strong> Success is inferred from a new-record-id snapshot; "id unchanged" is a soft-OK, which can occasionally false-pass.</li>
+    <li><strong>Resume is keyed by</strong> <code>workflowId::fileName::rowCount</code>. Renaming the file or changing the row count starts a <strong>new</strong> run.</li>
+    <li><strong>Excel = first sheet only</strong>, and <code>.xlsx</code> needs SheetJS present (<code>lib/xlsx.full.min.js</code>); <code>.csv</code> works with zero setup.</li>
+  </ul>
+
+  <h2 id="recorder">8. Recorder (Teach) limits</h2>
+  <ul>
+    <li>Records <strong>field focus/typing</strong>, <strong>button/tab/link clicks</strong>, and the <strong>Enter</strong> key. It does <strong>not</strong> record Escape or arbitrary key chords.</li>
+    <li><strong>Meaningless clicks are filtered:</strong> inline-script wrappers and identity-less containers are skipped, and Maximo grid internals (<code>tempselect</code>, list toggles) are dropped at record time, run time, and dry-run. Other internal controls may need adding to <code>isJunkClick</code>.</li>
+    <li>Teaching stores <strong>who</strong> an element is (stable key, label, id/name, tab) — never <strong>where</strong>. Scrolling while teaching has zero effect; coordinates are computed fresh at run time only.</li>
+  </ul>
+
+  <h2 id="practice">9. Recommended production practice</h2>
+  <ol>
+    <li><strong>Bind</strong> the key fields, New, and Save rather than relying on recorded fuzzy matching — bound fields resolve deterministically at 100.</li>
+    <li><strong>Dry-run</strong> on the target screen first — resolves every step without acting and flags anything unresolved.</li>
+    <li><strong>Watch mode</strong> (run row 1) before a full batch, to confirm the highlight lands on the right controls.</li>
+    <li>Don't click into the live form mid-run; scrolling/mouse are fine.</li>
+    <li>Keep the <strong>Logs</strong> tab / exported results — every row and modal event is recorded for the morning-after review.</li>
+    <li>Test both CREATE and UPDATE on one screen across a few sessions before scaling out.</li>
+  </ol>
+
+  <h2 id="quick">10. Quick reference — is it safe?</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Situation</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td>Scroll / move mouse during a run</td><td><span class="pill ok">✅ Safe</span></td></tr>
+      <tr><td>Off-screen / bottom-of-form field</td><td><span class="pill ok">✅ Safe (focus scrolls it in)</span></td></tr>
+      <tr><td>Value landing in the wrong field</td><td><span class="pill ok">✅ Prevented (read-back self-corrects)</span></td></tr>
+      <tr><td>Switch tabs during a run</td><td><span class="pill ok">✅ Safe</span></td></tr>
+      <tr><td>Click into the running form</td><td><span class="pill warn">⚠️ Target self-heals; hijacked field can corrupt</span></td></tr>
+      <tr><td>Trusted button click while scrolling</td><td><span class="pill warn">⚠️ May be missed → row fails cleanly</span></td></tr>
+      <tr><td>Cross-origin embedded frame</td><td><span class="pill bad">❌ Unreachable</span></td></tr>
+      <tr><td>Blank a field via empty cell</td><td><span class="pill bad">❌ Not possible (by design)</span></td></tr>
+      <tr><td>Share the tab with open DevTools</td><td><span class="pill bad">❌ CDP conflict</span></td></tr>
+    </tbody>
+  </table></div>
+
+  <footer>MaxLoad — Maximo Excel Automation · reliability &amp; limits reference · generated from the current extension source.</footer>
+
+</div>
+</body>
+</html>
