@@ -447,14 +447,113 @@
     return [...new Set(menuOptions().map((a) => optionCode(a) || optText(a)).filter(Boolean))].slice(0, 16).join(", ");
   }
 
+  // ==== NATIVE bridge client (talks to maximo-native.js in the MAIN world) ====
+  // The bridge can call Maximo's own menuClick(), so it applies a status WITHOUT
+  // the menu having to open on screen — the most reliable path. We message it via
+  // window.postMessage and take the first frame that owns the status menu.
+
+  let nativeSeq = 0;
+  /** Post one request to `win`'s MAIN-world bridge and await its reply. Resolves
+   *  { ok, ... } or a { ok:false, reason } on timeout / no bridge. */
+  function nativeCall(win, op, args, timeoutMs) {
+    return new Promise((resolve) => {
+      const id = "mln-" + ++nativeSeq + "-" + Math.random().toString(36).slice(2, 7);
+      let done = false;
+      const finish = (val) => {
+        if (done) return;
+        done = true;
+        window.removeEventListener("message", onMsg, false);
+        resolve(val);
+      };
+      const onMsg = (ev) => {
+        const d = ev.data;
+        if (!d || d.__mlNative !== true || d.dir !== "res" || d.id !== id) return;
+        finish(d.result || (d.ok ? { ok: true } : { ok: false, reason: d.error || "err" }));
+      };
+      window.addEventListener("message", onMsg, false);
+      try {
+        win.postMessage({ __mlNative: true, dir: "req", id, op, args }, "*");
+      } catch (_) {
+        finish({ ok: false, reason: "post-failed" });
+        return;
+      }
+      setTimeout(() => finish({ ok: false, reason: "timeout" }), timeoutMs || 4000);
+    });
+  }
+
+  /** This frame's window + every same-origin child frame's window. */
+  function candidateWindows() {
+    const wins = [window];
+    const seen = new Set(wins);
+    for (const doc of docs()) {
+      const w = doc.defaultView;
+      if (w && !seen.has(w)) {
+        seen.add(w);
+        wins.push(w);
+      }
+    }
+    return wins;
+  }
+
+  /** Resolve as soon as ANY promise reports ok; otherwise the last meaningful
+   *  failure once all settle. Avoids blocking on a frame that has no bridge. */
+  function firstOk(promises) {
+    return new Promise((resolve) => {
+      let remaining = promises.length;
+      let fallback = { ok: false, reason: "no-frame" };
+      if (!remaining) return resolve(fallback);
+      const settle = (r) => {
+        if (r && r.ok) return resolve(r);
+        if (r && r.reason && r.reason !== "not-here" && r.reason !== "timeout") fallback = { ok: false, reason: r.reason };
+        if (--remaining === 0) resolve(fallback);
+      };
+      for (const p of promises) p.then(settle, () => settle(null));
+    });
+  }
+
+  /** Ask Maximo (natively) to set the status. Resolves value -> canonical code +
+   *  known labels, then lets the MAIN-world bridge invoke menuClick. Returns the
+   *  bridge result, or { ok:false, reason } if no frame could do it. */
+  async function nativeSetStatus(value, opener) {
+    const syn = synonymsFor(value);
+    const code = syn.code || normCode(value);
+    const labels = [];
+    if (syn.code && STATUS_SYNONYMS[syn.code]) labels.push(...STATUS_SYNONYMS[syn.code]);
+    labels.push(value);
+    const args = {
+      code,
+      labels,
+      openerId: (opener && opener.id) || "",
+      fieldId: (opener && opener.binding && opener.binding.id) || "",
+      near: (opener && opener.near) || "" // the field label, e.g. "New Status"
+    };
+    return firstOk(candidateWindows().map((w) => nativeCall(w, "setStatus", args, 6000)));
+  }
+
   /**
    * Open the status menu (if not already open) and click the option matching
-   * `value`. Resolution order: CODE (option id) -> exact option TEXT -> fail (no
-   * look-alike click). Returns { ok } or { ok:false, message }.
+   * `value`. Resolution order: NATIVE menuClick (bridge) -> CODE (option id) ->
+   * exact option TEXT -> fail (no look-alike click). Returns { ok } or
+   * { ok:false, message }.
    */
   async function selectSynonym(value, opener) {
     const v = String(value == null ? "" : value).trim();
     if (!v) return { ok: true, skipped: true };
+
+    // 0. NATIVE FIRST — have Maximo apply the status via its own menuClick(). This
+    //    works whether or not the menu is visually open, so it removes the whole
+    //    "the dropdown never opens" failure class. Falls through to the click flow
+    //    below if the bridge isn't present or the menu isn't built in any frame.
+    try {
+      const nat = await nativeSetStatus(v, opener);
+      if (nat && nat.ok) {
+        await MaxLoad.settle.waitForSettleOrModal({ quietMs: 200, timeoutMs: 600 });
+        return { ok: true, code: nat.code, label: nat.label, via: "native" };
+      }
+      MaxLoad.log && MaxLoad.log("native status set unavailable (" + (nat && nat.reason) + ") — using click flow");
+    } catch (e) {
+      MaxLoad.warn && MaxLoad.warn("native status set error: " + String(e && e.message ? e.message : e));
+    }
 
     // 1. OPEN the menu — by OUTCOME (several methods, each verified). Returns fast
     //    if the preceding opener click already opened it.
