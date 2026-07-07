@@ -37,7 +37,10 @@
   /** Detect which triggers currently apply, in priority order. */
   function detectTriggers() {
     const hits = [];
-    if (MaxLoad.settle.isBusy()) hits.push("spinner-visible");
+    // NOTE: we deliberately do NOT wait on the busy/spinner here — the settle
+    // detector already waits for the busy indicator around every action, so
+    // re-waiting here just doubled the delay (and a false-positive/stuck busy
+    // indicator was making that a multi-second penalty per click).
     // lookup popup: a visible dialog that contains a filter/search row + result table
     const docs = MaxLoad.dom.collectDocuments(document);
     for (const doc of docs) {
@@ -53,7 +56,7 @@
   }
 
   /** Wait for the busy/spinner indicator to clear. */
-  async function waitForDisappear(timeoutMs = 20000) {
+  async function waitForDisappear(timeoutMs = 2500) {
     const start = MaxLoad.util.now();
     while (MaxLoad.settle.isBusy()) {
       if (MaxLoad.util.now() - start > timeoutMs) return false;

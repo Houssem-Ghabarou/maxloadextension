@@ -63,6 +63,7 @@ async function injectContentScripts(tabId) {
     "engines/resume-engine.js",
     "engines/excel-engine.js",
     "engines/ai-recovery.js",
+    "content/menu-select.js",
     "content/execution-engine.js",
     "content/frame-bridge.js",
     "content/panel-inject.js"

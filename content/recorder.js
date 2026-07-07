@@ -123,6 +123,24 @@
     broadcast();
   }
 
+  // ---- status/synonym dropdown option -> a `select` step (by internal code) --
+  function addSelectStep(syn) {
+    const opener = MaxLoad.menu.openerOf(syn.el);
+    const label = MaxLoad.util.elementText(syn.el.closest("a,li") || syn.el, 40) || syn.code;
+    state.steps.push({
+      id: MaxLoad.util.uid(),
+      type: "select",
+      code: syn.code, // internal status code from the option id (e.g. INPRG)
+      sampleValue: syn.code, // shown as the "fixed" choice in the column menu
+      sampleLabel: label, // the visible option text (e.g. "In progress")
+      opener, // { id, title, near } — how to re-open the menu at replay
+      target: { label: (opener && opener.near) || "status", stableKey: syn.code },
+      column: "__fixed__" // default: replay the demonstrated status; map to a column for per-row
+    });
+    MaxLoad.log("teach: select status " + syn.code + " (" + label + ")");
+    broadcast();
+  }
+
   // ---- key steps (only Enter — e.g. to submit a search) ---------------------
   function onKeyDown(ev) {
     if (!state.recording) return;
@@ -168,6 +186,14 @@
   function onClick(ev) {
     if (!state.recording) return;
     if (ev.target.closest && ev.target.closest("#maxload-panel-host, #maxload-bind-overlay")) return;
+    // a click on a status-menu OPTION -> a `select` step, driven by internal code
+    if (MaxLoad.menu && MaxLoad.menu.synonymOption) {
+      const syn = MaxLoad.menu.synonymOption(ev.target);
+      if (syn) {
+        addSelectStep(syn);
+        return;
+      }
+    }
     // an explicit click INTO a fillable field records it — this is the ONLY way
     // a field is captured now (never on auto/tab focus).
     const field = ev.target.closest(MaxLoad.dom.CONTROL_SELECTOR);
@@ -205,8 +231,8 @@
   }
   function setStepColumn(stepId, value) {
     const s = state.steps[typeof stepId === "number" ? stepId : findIndex(stepId)];
-    if (!s || s.type !== "set-field") return;
-    s.column = value || "__ignore__";
+    if (!s || (s.type !== "set-field" && s.type !== "select")) return;
+    s.column = value || (s.type === "select" ? "__fixed__" : "__ignore__");
     broadcast();
   }
   function setStepOperator(stepId, op) {
@@ -259,7 +285,7 @@
 
   function buildWorkflow(name) {
     const mappedCols = state.steps
-      .filter((s) => s.type === "set-field" && s.column && !["__ignore__", "__fixed__", "__key__"].includes(s.column))
+      .filter((s) => (s.type === "set-field" || s.type === "select") && s.column && !["__ignore__", "__fixed__", "__key__"].includes(s.column))
       .map((s) => s.column);
     return {
       id: "wf-" + Date.now().toString(36),

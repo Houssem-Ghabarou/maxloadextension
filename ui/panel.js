@@ -236,6 +236,17 @@
         info.appendChild(el("strong", null, `${i + 1}. ⌨ press ${s.key}${where ? " in " + where : ""}`));
         head.append(info, stepControls(s));
         li.appendChild(head);
+      } else if (s.type === "select") {
+        info.appendChild(el("strong", null, `${i + 1}. 🔽 status = “${s.sampleLabel || s.code}”`));
+        info.appendChild(el("div", "meta", `code: ${s.code}${s.opener && s.opener.near ? " · via " + s.opener.near : ""}`));
+        head.append(info, stepControls(s));
+        li.appendChild(head);
+        const row2 = el("div", "row");
+        row2.style.marginTop = "5px";
+        row2.style.flexWrap = "wrap";
+        row2.appendChild(el("span", "muted", "set from:"));
+        row2.appendChild(colMenu(s));
+        li.appendChild(row2);
       } else {
         info.appendChild(el("strong", null, `${i + 1}. ✎ ${(s.target && s.target.label) || (s.binding && s.binding.stableKey) || "field"}`));
         info.appendChild(el("div", "meta", `[${s.target && s.target.controlType}] key: ${(s.binding && (s.binding.stableKey || s.binding.id)) || "—"}`));
@@ -447,6 +458,12 @@
         if (s.column === "__ignore__" || !s.column) lines.push(`↷ ${nm} — not filled`);
         else if (s.column === "__fixed__") lines.push(`Fill ${nm} with fixed “${s.sampleValue}”${op}`);
         else lines.push(`Fill ${nm} with ${src}${op}`);
+      } else if (s.type === "select") {
+        const nm = (s.target && s.target.label) || "status";
+        if (!s.column || s.column === "__ignore__" || s.column === "__fixed__")
+          lines.push(`Set ${nm} to fixed “${s.code}” (open the dropdown & pick by code)`);
+        else if (s.column === "__key__") lines.push(`Set ${nm} from _key_value`);
+        else lines.push(`Set ${nm} from column “${s.column}” (open the dropdown & pick by code)`);
       }
     });
     return lines;

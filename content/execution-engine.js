@@ -458,6 +458,38 @@
     return { value: applyOperator(step.operator, v) };
   }
 
+  /** Decide the status value for a `select` step: column | fixed demonstrated
+   *  code | key. Unbound falls back to the demonstrated code; empty is skipped. */
+  function selectValueFor(step, row) {
+    const map = step.column || "__fixed__";
+    let v;
+    if (map === "__fixed__" || map === "__ignore__") v = step.code != null ? String(step.code) : "";
+    else if (map === "__key__") v = row._key_value != null ? String(row._key_value).trim() : "";
+    else {
+      const raw = row[map];
+      v = raw != null ? String(raw).trim() : "";
+    }
+    if (v === "") return { skip: true };
+    return { value: v };
+  }
+
+  /** A cheap presence check for the NEXT step's target, used to wait out a dialog
+   *  this click just opened (e.g. Change Status → the status dialog) before racing
+   *  ahead. Returns null when there's nothing to wait for. */
+  function nextTargetProbe(step) {
+    if (!step) return null;
+    if (step.type === "set-field" && step.binding && MaxLoad.binder) {
+      return () => !!MaxLoad.binder.locate(step.binding);
+    }
+    if (step.type === "select") {
+      const b = step.opener && step.opener.binding;
+      return () =>
+        (MaxLoad.menu && MaxLoad.menu.menuOpen && MaxLoad.menu.menuOpen()) ||
+        (!!b && MaxLoad.binder && !!MaxLoad.binder.locate(b));
+    }
+    return null;
+  }
+
   async function resolveStepField(step, meta) {
     // 1. deterministic, label-first (free + instant) with a late-render retry
     if (step.binding && MaxLoad.binder) {
@@ -601,14 +633,41 @@
           continue;
         }
         const save = isSaveStep(step);
+        // a click whose NEXT step is a `select` is the dropdown OPENER — never let
+        // its miss abort the row; the select step re-opens the menu itself.
+        const opensDropdown = steps[idx + 1] && steps[idx + 1].type === "select";
         const rb = await resolveStepButton(step, meta);
-        if (!rb.el)
+        if (!rb.el) {
+          if (opensDropdown) {
+            reportStep(rowNum, idx, "click", (step.text || "dropdown") + " (opener — menu handled next)", "skipped");
+            continue;
+          }
           return { status: "failed", transient: true, message: `step ${idx + 1}: button "${step.text || (step.binding && step.binding.stableKey)}" not found` };
+        }
         reportStep(rowNum, idx, save ? "save" : "click", step.text || step.binding.stableKey, rb.via);
         MaxLoad.hl && MaxLoad.hl.flash(rb.el, save ? "save" : "click");
         MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: ${save ? "Save" : "click “" + (step.text || "button") + "”"}`, save ? "save" : "click");
         await MaxLoad.input.click(rb.el);
-        await MaxLoad.settle.waitForSettleOrModal({ quietMs: 400, timeoutMs: save ? 12000 : 8000 });
+        await MaxLoad.settle.waitForSettleOrModal({ quietMs: 400, timeoutMs: save ? 12000 : opensDropdown ? 800 : 5000 });
+
+        // If the next step interacts with a field/dropdown that lives in a dialog
+        // this click just opened (Change Status → the status dialog fetches over
+        // the network, with a quiet gap isBusy() misses), don't race ahead — wait
+        // until that target actually renders. Bounded, and free when it's already
+        // there (the common case: normal form fields), so it only costs time when
+        // a dialog is genuinely still loading.
+        if (!save) {
+          const probe = nextTargetProbe(steps[idx + 1]);
+          if (probe && !probe()) {
+            await MaxLoad.settle.retryUntil(
+              async () => {
+                await MaxLoad.settle.waitForSettle({ quietMs: 250, timeoutMs: 2000 });
+                return probe();
+              },
+              { intervalMs: 200, timeoutMs: 8000 }
+            );
+          }
+        }
 
         if (isNewStep(step)) {
           // ENTRY: "save changes?" here = discard the previous record and continue.
@@ -619,14 +678,16 @@
           // field steps retry and report precisely (works for record-New AND a
           // "new row" inside a relation/table, which has no top-level form).
           await verifyEntry(workflow);
-        } else {
+        } else if (!opensDropdown) {
           h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
           if (h.outcome === "abort") return { status: "abort", message: h.message };
           if (h.outcome === "fail") return { status: "failed", message: h.message };
         }
 
         if (save) saved = true;
-        await MaxLoad.rules.applyRules({});
+        // an opener that's about to drop a menu doesn't need lookup/spinner
+        // handling — skip it (it was the biggest source of delay on status).
+        if (!opensDropdown) await MaxLoad.rules.applyRules({});
       } else if (step.type === "set-field") {
         const fv = fieldValueFor(step, row);
         if (fv.skip) {
@@ -668,6 +729,24 @@
         await MaxLoad.input.pressKey(step.key);
         await MaxLoad.settle.waitForSettleOrModal({ quietMs: 500, timeoutMs: 12000 });
 
+        h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
+        if (h.outcome === "abort") return { status: "abort", message: h.message };
+        if (h.outcome === "fail") return { status: "failed", message: h.message };
+      } else if (step.type === "select") {
+        // Maximo status/synonym dropdown: open the menu (reusing the opener the
+        // previous click opened, or re-opening via its stable anchors) and click
+        // the option by its internal CODE — from the Excel column, or the fixed
+        // demonstrated code when unmapped.
+        const sv = selectValueFor(step, row);
+        const nm = (step.target && step.target.label) || "status";
+        if (sv.skip) {
+          reportStep(rowNum, idx, "skip", nm + " (empty)", "empty");
+          continue;
+        }
+        reportStep(rowNum, idx, "select", `${nm} = ${sv.value}`, "menu");
+        MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: ${nm} → “${sv.value}”`, "field");
+        const rs = await MaxLoad.menu.selectSynonym(sv.value, step.opener);
+        if (!rs.ok) return { status: "failed", message: `step ${idx + 1}: ${nm} — ${rs.message}` };
         h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
         if (h.outcome === "abort") return { status: "abort", message: h.message };
         if (h.outcome === "fail") return { status: "failed", message: h.message };
@@ -799,6 +878,13 @@
           const label = s.target && (s.target.label || s.target.stableKey);
           const to = s.column === "__ignore__" ? "(not filled)" : s.column === "__fixed__" ? `= "${s.sampleValue}"` : s.column === "__key__" ? "= _key_value" : "← col " + s.column;
           results.push({ step: `${i + 1}. field ${label} ${to}`, found: !!r.el, via: r.via || r.reason, score: r.score || r.bestScore || 0, muted: !mapped });
+        } else if (s.type === "select") {
+          const bound = s.column && !["__ignore__", "__fixed__"].includes(s.column);
+          const to = bound ? "← col " + s.column : `= code "${s.code}"`;
+          const nm = (s.target && s.target.label) || "status";
+          // dry run must not open menus / act; just report the step + opener info
+          const opener = s.opener && (s.opener.binding || s.opener.near || s.opener.title || s.opener.id) ? "opener ok" : "no opener";
+          results.push({ step: `${i + 1}. status ${nm} ${to}`, found: true, via: "menu (" + opener + ")", score: 100, muted: !bound });
         }
       }
       return results;
