@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>MaxLoad Desktop</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0f1115; overflow: hidden;
+    font: 13px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; color: #e6e8ec; }
+  #bar { height: 48px; box-sizing: border-box; display: flex; align-items: center;
+    gap: 8px; padding: 0 10px; background: #171a21; border-bottom: 1px solid #262b36; }
+  button { background: #232834; color: #e6e8ec; border: 1px solid #313846;
+    border-radius: 6px; height: 30px; padding: 0 10px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #2b313f; }
+  button:active { transform: translateY(1px); }
+  #url { flex: 1; height: 30px; box-sizing: border-box; padding: 0 10px;
+    background: #0f1115; color: #e6e8ec; border: 1px solid #313846; border-radius: 6px;
+    outline: none; font-size: 13px; }
+  #url:focus { border-color: #3b82f6; }
+  #brand { font-weight: 600; letter-spacing: .3px; padding: 0 6px; color: #9aa4b2; }
+  #brand b { color: #e6e8ec; }
+  #panelBtn.active { background: #1d4ed8; border-color: #1d4ed8; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span id="brand"><b>MaxLoad</b> Desktop</span>
+    <button id="back" title="Back">◀</button>
+    <button id="reload" title="Reload">⟳</button>
+    <input id="url" placeholder="Enter your Maximo URL and press Enter  (e.g. https://maximo.company.com/maximo)" />
+    <button id="go">Go</button>
+    <button id="panelBtn" class="active">Panel</button>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const shell = window.__shell;
+
+    function go() {
+      const v = $("url").value.trim();
+      if (v) shell.navigate(v);
+    }
+    $("go").addEventListener("click", go);
+    $("url").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    $("back").addEventListener("click", () => shell.back());
+    $("reload").addEventListener("click", () => shell.reload());
+
+    let panelOn = true;
+    $("panelBtn").addEventListener("click", () => {
+      shell.togglePanel();
+      panelOn = !panelOn;
+      $("panelBtn").classList.toggle("active", panelOn);
+    });
+
+    // Reflect the Maximo view's current URL back into the address bar.
+    shell.onStatus((url) => {
+      if (url && !url.startsWith("maxload://")) $("url").value = url;
+    });
+  </script>
+</body>
+</html>

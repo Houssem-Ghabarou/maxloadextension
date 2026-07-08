@@ -1,0 +1,13 @@
+{
+  "name": "maxload-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MaxLoad as a standalone desktop app — the same Chrome-extension codebase, running in an embedded Chromium via Electron. User logs into Maximo manually; the same panel appears.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}
