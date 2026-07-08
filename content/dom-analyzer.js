@@ -130,7 +130,16 @@
     return "textbox";
   }
 
-  /** Build a fingerprint object for one control. */
+  /** Numeric maxlength of an input, or -1 when unset — a strong verification
+   *  signal for disambiguating same-label fields (cheap attribute read). */
+  function maxLenOf(el) {
+    const n = parseInt((el.getAttribute && el.getAttribute("maxlength")) || "-1", 10);
+    return isFinite(n) ? n : -1;
+  }
+
+  /** Build a fingerprint object for one control. Kept CHEAP — it runs for every
+   *  control on every scan, so it only reads attributes (no ancestor walks). The
+   *  durable stable fp (section/tab) is computed on demand via fieldFingerprint(). */
   function fingerprint(el) {
     return {
       el,
@@ -141,8 +150,34 @@
       ariaLabel: el.getAttribute("aria-label") || "",
       title: el.getAttribute("title") || "",
       label: labelFor(el),
+      ctype: (el.getAttribute && el.getAttribute("ctype")) || "",
+      maxLength: maxLenOf(el),
       visible: isVisible(el),
       doc: el.ownerDocument
+    };
+  }
+
+  /**
+   * The DURABLE, cross-session field fingerprint — Maximo's own stable structure,
+   * NOT the volatile generated id. Captured at teach time on the pointed field and
+   * used at replay to re-derive the live input even after its id regenerates on a
+   * new login. Mirrors iAMXLS `fpOf`: visible label + section + active tab +
+   * control type + maxlength + required/lookup flags. More expensive than
+   * fingerprint() (ancestor walks for section) — call it per pointed field, not per
+   * scanned field.
+   */
+  function fieldFingerprint(el) {
+    let fi = {};
+    try { fi = JSON.parse((el.getAttribute && el.getAttribute("fldinfo")) || "{}"); } catch (_) {}
+    return {
+      label: labelFor(el) || "",
+      section: sectionAnchor(el) || "",
+      tab: (activeContexts(el.ownerDocument)[0]) || "",
+      ctype: (el.getAttribute && el.getAttribute("ctype")) || "",
+      maxLength: maxLenOf(el),
+      required: (el.getAttribute && el.getAttribute("aria-required") === "true") || !!fi.required,
+      lookup: !!fi.lookup || !!(el.getAttribute && el.getAttribute("li")),
+      idStem: MaxLoad.matcher ? (MaxLoad.matcher.getStableKey(el) || "") : ""
     };
   }
 
@@ -251,15 +286,83 @@
     };
   }
 
+  // ---- disambiguating REPEATED controls (e.g. many identical "New Row" buttons) ----
+  const CLICKABLE_SIG =
+    "button, a, input[type=button], input[type=submit], input[type=image], " +
+    "[role=button], [role=menuitem], [onclick], img[id]";
+
+  /** Normalized visible signature of a clickable (its text / alt / title). */
+  function clickText(el) {
+    const t =
+      MaxLoad.util.elementText(el, 60) ||
+      el.getAttribute("alt") || el.getAttribute("title") || el.getAttribute("aria-label") || el.value || "";
+    return normLabel(t);
+  }
+
+  /**
+   * Best-effort STABLE label of the section/table an element sits in — walks up a
+   * few ancestors and reads the nearest section/table header or caption. This is
+   * what tells apart repeated controls: every editable Maximo table has its own
+   * "New Row" button with identical text, but a different section header above it
+   * ("Plans", "Tâches", "Matériel", …).
+   */
+  function sectionAnchor(el) {
+    let node = el && el.parentElement;
+    for (let i = 0; i < 12 && node; i++, node = node.parentElement) {
+      let hdr = null;
+      try {
+        hdr = node.querySelector(
+          "caption, legend, [role='heading'], h1, h2, h3, h4, h5, " +
+          "[class*='sectionheader' i], [class*='sectionhdr' i], [class*='tablehdr' i], " +
+          "[class*='sectiontitle' i], [class*='tabletitle' i], [class*='mtb_header' i]"
+        );
+      } catch (_) {}
+      if (hdr && !hdr.contains(el) && isVisible(hdr)) {
+        const t = (hdr.textContent || "").replace(/\s+/g, " ").trim();
+        if (t && t.length <= 80) return normLabel(t);
+      }
+    }
+    return "";
+  }
+
+  /** Every visible clickable sharing a signature, in document order across frames. */
+  function sameSignatureClickables(sig) {
+    const out = [];
+    if (!sig) return out;
+    for (const doc of collectDocuments(document)) {
+      let els;
+      try {
+        els = doc.querySelectorAll(CLICKABLE_SIG);
+      } catch (_) {
+        continue;
+      }
+      for (const el of els) if (isVisible(el) && clickText(el) === sig) out.push(el);
+    }
+    return out;
+  }
+
+  /** Which same-signature clickable this is (0-based), or -1. Stable across runs
+   *  because the number of tables/sections on a screen is fixed. */
+  function ordinalOf(el) {
+    const sig = clickText(el);
+    return sig ? sameSignatureClickables(sig).indexOf(el) : -1;
+  }
+
   MaxLoad.dom = {
     collectDocuments,
     scanFields,
     fingerprint,
+    fieldFingerprint,
+    maxLenOf,
     labelFor,
     controlType,
     activeContexts,
     findButton,
     describeState,
+    clickText,
+    sectionAnchor,
+    sameSignatureClickables,
+    ordinalOf,
     CONTROL_SELECTOR
   };
 })();

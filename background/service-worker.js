@@ -9,7 +9,7 @@
  */
 
 const LOG_KEY = "ml:logRing";
-const LOG_CAP = 3000;
+const LOG_CAP = 6000; // detailed run tracing is chatty — keep more history for diagnosis
 const SETTINGS_KEY = "ml:settings";
 
 // Supported AI providers. All are OpenAI-chat-completions compatible, so only
@@ -223,6 +223,11 @@ chrome.debugger.onDetach.addListener((source) => {
   if (source.tabId != null) attached.delete(source.tabId);
 });
 
+// Input is coordinate-free on the hot path: typing and key presses go to the
+// FOCUSED node (no pixels). The ONE exception is the last-resort trusted click
+// below — it fires only when a Dojo widget ignored BOTH synthetic events and
+// keyboard activation, at a point the content script already hit-tested against
+// the element, so it never lands on a neighbour.
 async function cdpClick(tabId, x, y) {
   await ensureAttached(tabId);
   const p = { x, y, button: "left" };
@@ -231,27 +236,69 @@ async function cdpClick(tabId, x, y) {
   await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", ...p, buttons: 0, clickCount: 1 });
 }
 
+// PLAYWRIGHT-STYLE trusted click: resolve the element by a unique selector, ask
+// the BROWSER for its box (DOM.getBoxModel — composited across frames, zoom-aware),
+// and dispatch a real click at the box centre. This is exactly how Playwright's
+// locator.click() targets a node (iAMXLS's click), so it can't drift to a
+// neighbour and works under zoom / in iframes — no hand-summed pixel math.
+async function cdpClickSelector(tabId, selector) {
+  await ensureAttached(tabId);
+  // DOM.performSearch traverses the whole tree INCLUDING frames (what DevTools
+  // "search" uses), so it finds our marked node wherever it lives. Needs the DOM
+  // domain enabled + a document fetched so nodeIds resolve.
+  await cdp(tabId, "DOM.enable", {}).catch(() => {});
+  await cdp(tabId, "DOM.getDocument", { depth: 1 }).catch(() => {});
+  const search = await cdp(tabId, "DOM.performSearch", { query: selector, includeUserAgentShadowDOM: true });
+  const count = search && search.resultCount ? search.resultCount : 0;
+  if (!count) {
+    if (search) await cdp(tabId, "DOM.discardSearchResults", { searchId: search.searchId }).catch(() => {});
+    throw new Error("node not found for selector " + selector);
+  }
+  const got = await cdp(tabId, "DOM.getSearchResults", { searchId: search.searchId, fromIndex: 0, toIndex: count });
+  await cdp(tabId, "DOM.discardSearchResults", { searchId: search.searchId }).catch(() => {});
+  const nodeIds = (got && got.nodeIds) || [];
+  // Get a box; take the last match (deepest/freshest) that yields a real quad.
+  let quad = null;
+  for (let i = nodeIds.length - 1; i >= 0 && !quad; i--) {
+    try {
+      const box = await cdp(tabId, "DOM.getBoxModel", { nodeId: nodeIds[i] });
+      if (box && box.model && box.model.content && box.model.width > 0 && box.model.height > 0) quad = box.model.content;
+    } catch (_) { /* node may be detached — try the next */ }
+  }
+  if (!quad) throw new Error("no box model for selector " + selector);
+  const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
+  const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
+  await cdpClick(tabId, x, y);
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
 async function cdpKey(tabId, key, code, vk, modifiers) {
   const base = { key, code, windowsVirtualKeyCode: vk || 0, nativeVirtualKeyCode: vk || 0, modifiers: modifiers || 0 };
   await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", ...base });
   await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...base });
 }
 
-// select existing content (Ctrl+A + Delete) then overwrite via trusted text
-// insertion, and optionally commit with Tab/Enter — all on the FOCUSED element.
+// Type ONE character as a genuine key press (keyDown carrying the char text, then
+// keyUp) — the way a human keyboard does it. Maximo commits a field change only
+// from real key events; a bulk Input.insertText leaves the Dojo bean unchanged, so
+// the field re-renders EMPTY on tab-out (a mandatory field then saves blank). This
+// mirrors Playwright's pressSequentially, which iAMXLS relies on.
+async function cdpTypeChar(tabId, ch) {
+  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", text: ch, unmodifiedText: ch, key: ch });
+  await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", key: ch });
+}
+
+// select existing content (Ctrl+A + Delete) then type the value CHARACTER BY
+// CHARACTER with real key events, and optionally commit with Tab/Enter — all on
+// the FOCUSED element.
 async function cdpClearInsert(tabId, text, commitKey) {
   await cdpKey(tabId, "a", "KeyA", 65, 2 /* Ctrl */);
   await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyDown", key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 });
   await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 });
-  if (text) await cdp(tabId, "Input.insertText", { text: String(text) });
+  const s = String(text == null ? "" : text);
+  for (const ch of s) await cdpTypeChar(tabId, ch);
   if (commitKey === "tab") await cdpKey(tabId, "Tab", "Tab", 9);
   else if (commitKey === "enter") await cdpKey(tabId, "Enter", "Enter", 13);
-}
-
-async function cdpType(tabId, x, y, text, commitKey) {
-  await ensureAttached(tabId);
-  await cdpClick(tabId, x, y); // focus the field with a real click at (x,y)
-  await cdpClearInsert(tabId, text, commitKey);
 }
 
 // Coordinate-free typing: the content script has already focused the element in
@@ -307,11 +354,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
 
-    case "ml:cdp:type": {
+    case "ml:cdp:click-selector": {
       const tabId = sender.tab && sender.tab.id;
       if (tabId == null) { sendResponse({ ok: false, error: "no tab" }); return true; }
-      cdpType(tabId, msg.x, msg.y, msg.text, msg.commitKey).then(
-        () => sendResponse({ ok: true }),
+      cdpClickSelector(tabId, msg.selector).then(
+        (r) => sendResponse({ ok: true, x: r.x, y: r.y }),
         (e) => sendResponse({ ok: false, error: String(e && e.message ? e.message : e) })
       );
       return true;

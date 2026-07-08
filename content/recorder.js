@@ -115,6 +115,17 @@
     const meaningfulKey = MaxLoad.matcher.meaningfulKey(binding.stableKey);
     if (!text && !meaningfulKey) return;
 
+    // Capture WHICH one it is when the page has repeats (many identical "Nouvelle
+    // ligne" / New Row buttons, one per table): the section header above it, and
+    // its index among same-labelled controls. Replay uses these to click the
+    // exact one you did — not the first look-alike.
+    try {
+      binding.anchor = {
+        section: MaxLoad.dom.sectionAnchor(el),
+        ord: MaxLoad.dom.ordinalOf(el)
+      };
+    } catch (_) {}
+
     const step = { id: MaxLoad.util.uid(), type: "click", binding, text };
     const last = state.steps[state.steps.length - 1];
     if (last && last.type === "click" && sameBinding(last.binding, binding) && last.text === text) return; // dedupe

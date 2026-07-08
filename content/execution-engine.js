@@ -14,6 +14,28 @@
   let cancelFlag = false;
   let running = false;
 
+  // ---- detailed run logging (exported to the log ring; export via panel) -----
+  const desc = (el) => (el && MaxLoad.input && MaxLoad.input.describeEl ? MaxLoad.input.describeEl(el) : null);
+  function describeBinding(b) {
+    if (!b) return null;
+    return {
+      role: b.role || "",
+      id: b.id || "",
+      stableKey: b.stableKey || "",
+      label: b.label || "",
+      text: b.text || "",
+      tab: b.tabContext || "",
+      hasFp: !!b.fp,
+      fpLabel: (b.fp && b.fp.label) || "",
+      fpSection: (b.fp && b.fp.section) || "",
+      fpTab: (b.fp && b.fp.tab) || "",
+      fpMaxLen: (b.fp && b.fp.maxLength) || null,
+      anchor: b.anchor || null
+    };
+  }
+  /** Structured trace line — prefixed so the exported log is easy to filter. */
+  function trace(msg, data) { MaxLoad.log("⟫ " + msg, data || null); }
+
   // ---- native value setting (works with Maximo/React-style inputs) ----------
   function isRichText(el) {
     return (
@@ -106,6 +128,64 @@
       return;
     }
     await MaxLoad.input.type(el, value, "tab");
+  }
+
+  /** Read a field's current value/text (for read-back verification). */
+  function readFieldValue(el) {
+    if (!el) return "";
+    if (isRichText(el)) return (el.textContent || "").trim();
+    return String(el.value == null ? "" : el.value).trim();
+  }
+
+  /**
+   * Enter a value the iAMXLS way: settle first (a field that just round-tripped
+   * briefly LOCKS input and drops keystrokes), type with trusted keystrokes + Tab
+   * commit (coordinate-free), wait for Maximo's validation round-trip, then READ
+   * BACK — and re-type ONLY if Maximo actually WIPED the field (empty). We never
+   * re-type a value it merely reformatted (a lookup/domain shows a display value),
+   * which was the old "clears then types again" flicker. Returns true if a value
+   * ended up in the field. This is what stops a mandatory field saving blank.
+   */
+  async function setFieldValueLoop(el, value) {
+    const want = String(value == null ? "" : value).trim();
+    // let any pending round-trip finish before typing (avoids the input-lock drop)
+    await MaxLoad.settle.whenIdle({ settleMs: 120, maxWaitMs: 4000 });
+    await typeInto(el, value);
+    // Tab-out fires Maximo's field validation (a /ui/maximo.jsp round-trip); wait
+    // on the action channel going quiet, event-driven — not a fixed sleep.
+    await MaxLoad.settle.whenIdle({ settleMs: 150, maxWaitMs: 4000 });
+    if (want === "") return true;
+    let got = readFieldValue(el);
+    const wiped = got === "" && !isRichText(el);
+    if (wiped) {
+      // Maximo wiped it (bean never registered the change) — re-enter once.
+      trace("field wiped after commit — re-typing", { el: desc(el), want: want.slice(0, 60) });
+      await typeInto(el, value);
+      await MaxLoad.settle.whenIdle({ settleMs: 150, maxWaitMs: 4000 });
+      got = readFieldValue(el);
+    }
+    const ok = got !== "";
+    trace("field commit " + (ok ? "✓" : "✗"), { el: desc(el), want: want.slice(0, 60), readback: got.slice(0, 60), reTyped: wiped });
+    return ok;
+  }
+
+  /**
+   * Find the Maximo SAVE control for the guaranteed end-of-row save. Prefer the
+   * stable toolbar action id (`toolactions_SAVE…`, unchanged across sessions and
+   * locales); fall back to a labelled Save button in the demo's language.
+   */
+  function findSaveControl() {
+    for (const doc of MaxLoad.dom.collectDocuments(document)) {
+      let el = null;
+      try { el = doc.querySelector('a[id^="toolactions_SAVE"], [id^="toolactions_SAVE"], img[id^="toolactions_SAVE"]'); } catch (_) {}
+      if (el && MaxLoad.util.isVisible(el)) return el;
+    }
+    return (
+      MaxLoad.dom.findButton("Save") ||
+      MaxLoad.dom.findButton("Enregistrer") ||
+      MaxLoad.dom.findButton("Sauvegarder") ||
+      null
+    );
   }
 
   // ---- guard: refuse to act while a blocking modal is present ---------------
@@ -220,10 +300,9 @@
       return { ok: true, skipped: true, message: `readonly: ${target.label} — skipped (warning)` };
     }
 
-    el.scrollIntoView({ block: "center" });
-    el.focus();
-    setNativeValue(el, value);
-    fireInputEvents(el);
+    // trusted keystrokes + Tab commit + read-back + re-type-if-wiped (same path
+    // the sequence runner uses — SELECT/checkbox/rich-text handled inside typeInto)
+    await setFieldValueLoop(el, value);
 
     // A lookup field may pop a chooser — let the rule engine handle it.
     await MaxLoad.rules.applyRules({ searchTerm: value });
@@ -491,10 +570,12 @@
   }
 
   async function resolveStepField(step, meta) {
-    // 1. deterministic, label-first (free + instant) with a late-render retry
+    // 1. deterministic, binding-first (fingerprint → label → id) with a late-render retry
     if (step.binding && MaxLoad.binder) {
       let el = MaxLoad.binder.locate(step.binding);
+      let retried = false;
       if (!el) {
+        retried = true;
         el = await MaxLoad.settle.retryUntil(
           async () => {
             await MaxLoad.settle.waitForSettle({ quietMs: 250, timeoutMs: 2500 });
@@ -503,26 +584,49 @@
           { intervalMs: 300, timeoutMs: 5000 }
         );
       }
-      if (el) return { el, via: "label", score: 100 };
+      if (el) { trace("resolve field ✓ (binding" + (retried ? "/retry" : "") + ")", { binding: describeBinding(step.binding), el: desc(el) }); return { el, via: "binding", score: 100 }; }
+      trace("resolve field — binding miss, trying matcher/AI", { binding: describeBinding(step.binding) });
     }
     // 2. only now fall through to matcher / rule-assist / AI (resolveField)
     const t = step.target || {};
-    return await resolveField(
+    const r = await resolveField(
       { label: t.label, stableKey: t.stableKey, controlType: t.controlType, tabContext: t.tabContext, _binding: step.binding },
       meta
     );
+    if (r && r.el) trace("resolve field ✓ (" + (r.via || "?") + ")", { label: t.label, score: r.score, el: desc(r.el) });
+    else trace("resolve field ✗ NOT FOUND", { label: t.label, stableKey: t.stableKey, bestScore: r && r.bestScore, binding: describeBinding(step.binding) });
+    return r;
   }
 
   /** Resolve a recorded click step: stable id/text first, AI only if stuck. */
   async function resolveStepButton(step, meta) {
-    if (MaxLoad.binder) {
-      const el = MaxLoad.binder.locateButton(step.binding);
-      if (el) return { el, via: "binding" };
-    }
-    if (step.text) {
-      const el = MaxLoad.dom.findButton(step.text);
-      if (el) return { el, via: "text" };
-    }
+    const quick = () => {
+      if (MaxLoad.binder) {
+        const el = MaxLoad.binder.locateButton(step.binding);
+        if (el) return { el, via: "binding" };
+      }
+      if (step.text) {
+        const el = MaxLoad.dom.findButton(step.text);
+        if (el) return { el, via: "text" };
+      }
+      return null;
+    };
+    let r = quick();
+    if (r) { trace("resolve button ✓ (fast)", { want: step.text || (step.binding && step.binding.stableKey), via: r.via, el: desc(r.el) }); return r; }
+    trace("resolve button — fast miss, retrying", { want: step.text, binding: describeBinding(step.binding) });
+
+    // A button in a JUST-OPENED dialog ("OK", "Yes", a sub-record toolbar) is
+    // often still painting on the first look — retry briefly before giving up, so
+    // a slow dialog doesn't hard-fail the row (which strands every later row too).
+    r = await MaxLoad.settle.retryUntil(
+      async () => {
+        await MaxLoad.settle.waitForSettle({ quietMs: 200, timeoutMs: 1500 });
+        return quick();
+      },
+      { intervalMs: 250, timeoutMs: 2500 }
+    );
+    if (r) { trace("resolve button ✓ (retry)", { want: step.text, via: r.via, el: desc(r.el) }); return r; }
+
     // AI fallback — describe the control so the model can pick it from structure
     if (MaxLoad.ai) {
       const ai = await MaxLoad.ai.resolveField({
@@ -533,9 +637,10 @@
       });
       if (ai && ai.pattern) {
         const el = MaxLoad.ai.resolveElement(ai.pattern);
-        if (el) return { el, via: ai.fromCache ? "cache:ai" : "ai" };
+        if (el) { trace("resolve button ✓ (AI)", { want: step.text, el: desc(el) }); return { el, via: ai.fromCache ? "cache:ai" : "ai" }; }
       }
     }
+    trace("resolve button ✗ NOT FOUND — nothing to click", { want: step.text, binding: describeBinding(step.binding) });
     return { el: null };
   }
 
@@ -609,8 +714,16 @@
     const steps = workflow.steps || [];
     const warnings = [];
     let saved = false;
+    let filled = 0; // fields/selects actually set — gates never-save-empty
+    let emptyRefused = false; // a demo Save reached with nothing filled → refused
 
     MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum} [${action}] — starting`, "click");
+    trace(`ROW ${rowNum} [${action}] start — ${steps.length} steps`, {
+      row: rowNum,
+      action,
+      screen: meta.screen,
+      steps: steps.map((s, i) => ({ i: i + 1, type: s.type, name: s.text || (s.target && s.target.label) || s.key || s.code || "", column: s.column }))
+    });
 
     const c0 = await clearLeftoverModals(rowNum, meta.screen);
     if (c0.abort) return { status: "abort", message: c0.message };
@@ -618,6 +731,15 @@
     for (let idx = 0; idx < steps.length; idx++) {
       if (cancelFlag) return { status: "cancelled", message: "run cancelled" };
       const step = steps[idx];
+      trace(`row ${rowNum} · step ${idx + 1}/${steps.length}: ${step.type}`, {
+        row: rowNum,
+        step: idx + 1,
+        type: step.type,
+        name: step.text || (step.target && (step.target.label || step.target.stableKey)) || step.key || step.code || "",
+        column: step.column,
+        binding: describeBinding(step.binding),
+        opener: step.opener ? { near: step.opener.near, title: step.opener.title, id: step.opener.id } : undefined
+      });
 
       // popup blocking BEFORE we act?
       let h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
@@ -633,6 +755,13 @@
           continue;
         }
         const save = isSaveStep(step);
+        // NEVER save an empty record: a demo Save reached with nothing filled would
+        // commit a blank/invalid row. Refuse it (data safety) and report honestly.
+        if (save && filled === 0) {
+          reportStep(rowNum, idx, "skip", "Save refused — no fields filled", "empty");
+          emptyRefused = true;
+          break;
+        }
         // a click whose NEXT step is a `select` is the dropdown OPENER — never let
         // its miss abort the row; the select step re-opens the menu itself.
         const opensDropdown = steps[idx + 1] && steps[idx + 1].type === "select";
@@ -707,9 +836,13 @@
         reportStep(rowNum, idx, "field", nm, r.via);
         MaxLoad.hl && MaxLoad.hl.flash(r.el, "field");
         MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: ${nm} = “${fv.value}”`, "field");
-        await typeInto(r.el, fv.value);
+        // trusted keystrokes + Tab commit + read-back + re-type-if-wiped
+        const okv = await setFieldValueLoop(r.el, fv.value);
+        if (okv) filled++;
+        else warnings.push(`"${nm}" did not accept the value`);
+        // a lookup field may pop a chooser — let the rule engine resolve it
         await MaxLoad.rules.applyRules({ searchTerm: fv.value });
-        await MaxLoad.settle.waitForSettleOrModal({ quietMs: 300, timeoutMs: 4000 });
+        await MaxLoad.settle.waitForSettleOrModal({ quietMs: 250, timeoutMs: 3000 });
 
         h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
         if (h.outcome === "abort") return { status: "abort", message: h.message };
@@ -747,17 +880,54 @@
         MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: ${nm} → “${sv.value}”`, "field");
         const rs = await MaxLoad.menu.selectSynonym(sv.value, step.opener);
         if (!rs.ok) return { status: "failed", message: `step ${idx + 1}: ${nm} — ${rs.message}` };
+        filled++;
         h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
         if (h.outcome === "abort") return { status: "abort", message: h.message };
         if (h.outcome === "fail") return { status: "failed", message: h.message };
       }
     }
 
+    trace(`row ${rowNum} · steps done`, { row: rowNum, filled, saved, emptyRefused });
+
+    // NEVER SAVE EMPTY: a demo Save was reached with nothing filled and refused.
+    if (emptyRefused) {
+      const inline0 = MaxLoad.errorWatcher.captureInlineMessages();
+      trace(`row ${rowNum} ✗ refused save — nothing filled`, { row: rowNum, filled });
+      return { status: "failed", message: "Nothing was filled (map the field steps to Excel columns, or the row's cells are empty) — record not saved." + tail(inline0) };
+    }
+
+    // GUARANTEED SAVE (iAMXLS): if the demo never pressed Save, do it now — unless
+    // nothing was filled, in which case refuse (never persist a blank record). This
+    // is why a taught flow that "did nothing" no longer reports a false success.
+    if (!saved) {
+      const inline0 = MaxLoad.errorWatcher.captureInlineMessages();
+      if (filled === 0) {
+        trace(`row ${rowNum} ✗ no fields filled — not saving`, { row: rowNum });
+        return { status: "failed", message: "No fields were filled (map the field steps to Excel columns) — record not saved." + tail(inline0) };
+      }
+      const saveEl = findSaveControl();
+      if (!saveEl) {
+        trace(`row ${rowNum} ✗ Save control NOT FOUND`, { row: rowNum, filled });
+        return { status: "failed", message: `Filled ${filled} field(s) but could not find the Save button — record left unsaved.` + tail(inline0) };
+      }
+      trace(`row ${rowNum} · guaranteed Save (demo had none)`, { row: rowNum, filled, saveEl: desc(saveEl) });
+      reportStep(rowNum, steps.length, "save", "Save (auto)", "auto");
+      MaxLoad.hl && MaxLoad.hl.flash(saveEl, "save");
+      MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: Save`, "save");
+      await MaxLoad.input.click(saveEl);
+      await MaxLoad.settle.waitForSettleOrModal({ quietMs: 400, timeoutMs: 12000 });
+      const hs = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
+      if (hs.outcome === "abort") return { status: "abort", message: hs.message };
+      if (hs.outcome === "fail") { trace(`row ${rowNum} ✗ save rejected`, { row: rowNum, message: hs.message }); return { status: "failed", message: hs.message }; }
+      saved = true;
+    }
+
     // a red banner can carry the real reason even without a popup
     const inline = MaxLoad.errorWatcher.captureInlineMessages();
     const errBanner = inline.find((s) => /error|invalid|required|not valid|must be|bmxaa\d+e/i.test(s));
-    if (errBanner) return { status: "failed", message: errBanner };
+    if (errBanner) { trace(`row ${rowNum} ✗ error banner`, { row: rowNum, banner: errBanner }); return { status: "failed", message: errBanner }; }
 
+    trace(`ROW ${rowNum} ✔ DONE`, { row: rowNum, filled, saved, warnings });
     MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: ✔ ${saved ? "saved" : "done"}`, "field");
     return { status: "done", message: (saved ? "saved" : "completed") + (warnings.length ? " | " + warnings.join(" ; ") : "") + tail(inline) };
   }
@@ -834,6 +1004,13 @@
       await MaxLoad.resume.setRow(runId, i, status, result.message || "");
       report(opts, { phase: "row-done", index: i, status, message: result.message || "", ms: dt, via: result.via });
 
+      // A FAILED row can leave a dialog / half-record open, which would strand
+      // EVERY later row (step 1 becomes unfindable forever). Try to get back to a
+      // clean baseline before continuing, so one bad row doesn't kill the batch.
+      if (status === "failed" && !cancelFlag) {
+        await recoverBaseline(workflow, i + 1);
+      }
+
       // brief settle between rows
       await sleep(150);
     }
@@ -843,6 +1020,27 @@
     await MaxLoad.input.detach();
     report(opts, { phase: "complete", runId, summary });
     return { ok: true, runId, summary };
+  }
+
+  /**
+   * After a failed row, best-effort return to a clean baseline so the failure
+   * doesn't cascade into every following row. We dismiss any known blocking popup,
+   * press Escape to close stray menus / sub-dialogs, then handle the "save
+   * changes?" prompt that discarding a half-built record may raise. Bounded and
+   * side-effect-light: on a screen that's actually fine, this is a no-op.
+   */
+  async function recoverBaseline(workflow, rowNum) {
+    const screen = workflow && workflow.screen;
+    try { await MaxLoad.errorWatcher.handleIfPresent(rowNum, screen); } catch (_) {}
+    try {
+      await MaxLoad.input.pressKey("Escape");
+      await sleep(120);
+      await MaxLoad.input.pressKey("Escape");
+    } catch (_) {}
+    try { await MaxLoad.settle.waitForSettleOrModal({ quietMs: 300, timeoutMs: 2500 }); } catch (_) {}
+    // discarding a dirty record may pop "save changes?" — answer it and move on
+    try { await MaxLoad.errorWatcher.handleEntryPrompt(rowNum, screen); } catch (_) {}
+    try { await MaxLoad.settle.waitForSettleOrModal({ quietMs: 250, timeoutMs: 2000 }); } catch (_) {}
   }
 
   function report(opts, ev) {

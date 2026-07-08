@@ -111,7 +111,7 @@
    * This dispatches over→down→up→click (+ pointer + focus) at the element's
    * center, in the element's own frame.
    */
-  util.realClick = function (el) {
+  util.realClick = function (el, skipClick) {
     if (!el) return false;
     const doc = el.ownerDocument;
     const win = doc.defaultView || window;
@@ -146,7 +146,10 @@
     } catch (_) {}
     pointer("pointerup", 0);
     mouse("mouseup", 0);
-    mouse("click", 0);
+    // skipClick: caller will fire the actual click via el.click() (which also
+    // runs inline onclick + javascript: hrefs) — avoids dispatching TWO click
+    // events (which would double a New Row / Save).
+    if (!skipClick) mouse("click", 0);
     return true;
   };
 

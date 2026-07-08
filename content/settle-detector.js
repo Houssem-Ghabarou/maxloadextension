@@ -52,6 +52,59 @@
   }
 
   /**
+   * Maximo's ACTION CHANNEL state, aggregated across all same-origin frames.
+   * action-tracker.js (MAIN world) publishes the in-flight XHR/fetch count and a
+   * last-activity timestamp onto each frame's <html> data-attributes; we sum them
+   * so a load in a child app-frame is seen from the top frame too. This is the
+   * event-driven signal behind whenIdle — Maximo's real round-trip, not a guess.
+   */
+  function actionState() {
+    let inflight = 0;
+    let last = 0;
+    for (const doc of docsToScan(document)) {
+      const de = doc && doc.documentElement;
+      if (!de) continue;
+      const n = parseInt(de.getAttribute("data-ml-inflight") || "0", 10);
+      if (isFinite(n)) inflight += n;
+      const t = parseInt(de.getAttribute("data-ml-lastaction") || "0", 10);
+      if (isFinite(t) && t > last) last = t;
+    }
+    return { inflight, last };
+  }
+
+  /**
+   * Wait until Maximo's action channel is idle: no in-flight request AND a short
+   * debounce since the last one (Maximo often chains a follow-up POST). Purely
+   * event-driven — returns the instant the condition holds — with a hard cap so a
+   * stuck server can't hang the run. Ported from iAMXLS navigator.whenIdle; this
+   * is the wait to use around typing/commit, not a fixed sleep.
+   */
+  async function whenIdle({ settleMs = 120, maxWaitMs = 6000 } = {}) {
+    const start = MaxLoad.util.now();
+    for (;;) {
+      const { inflight, last } = actionState();
+      const quiet = MaxLoad.util.now() - (last || start);
+      if (inflight <= 0 && quiet >= settleMs) return;
+      // STUCK-COUNTER / PERSISTENT-POLL SAFETY: Maximo keeps a long-lived async
+      // poll open, so inflight can read > 0 with no real activity. If the channel
+      // has been quiet past a short grace, treat it as idle rather than block the
+      // whole run. Mirrors iAMXLS whenIdle's 700ms resync — a stuck count can never
+      // cost more than this grace on any step.
+      if (quiet >= 700) return;
+      if (MaxLoad.util.now() - start >= maxWaitMs) return;
+      await sleep(15);
+    }
+  }
+
+  /** True only when the action channel is ACTIVELY working (a request started or
+   *  finished within the debounce). A persistent poll with no recent activity is
+   *  NOT "busy" — otherwise every settle would block for its full timeout. */
+  function channelBusy() {
+    const st = actionState();
+    return st.inflight > 0 && MaxLoad.util.now() - st.last < 700;
+  }
+
+  /**
    * Resolve once the page is quiet: no DOM mutations for `quietMs` AND not busy.
    * Times out after `timeoutMs` and resolves anyway (best-effort).
    */
@@ -75,7 +128,7 @@
       const tick = async () => {
         const idleFor = MaxLoad.util.now() - lastMutation;
         const elapsed = MaxLoad.util.now() - start;
-        const busy = isBusy();
+        const busy = isBusy() || channelBusy();
         if ((idleFor >= quietMs && !busy) || elapsed >= timeoutMs) {
           observer.disconnect();
           resolve({ settled: idleFor >= quietMs && !busy, timedOut: elapsed >= timeoutMs });
@@ -131,9 +184,10 @@
         }
         const idleFor = MaxLoad.util.now() - lastMutation;
         const elapsed = MaxLoad.util.now() - start;
-        if ((idleFor >= quietMs && !isBusy()) || elapsed >= timeoutMs) {
+        const busy = isBusy() || channelBusy();
+        if ((idleFor >= quietMs && !busy) || elapsed >= timeoutMs) {
           observer.disconnect();
-          resolve({ settled: idleFor >= quietMs, timedOut: elapsed >= timeoutMs });
+          resolve({ settled: idleFor >= quietMs && !busy, timedOut: elapsed >= timeoutMs });
           return;
         }
         setTimeout(tick, 80);
@@ -142,5 +196,5 @@
     });
   }
 
-  MaxLoad.settle = { waitForSettle, waitForSettleOrModal, retryUntil, isBusy, docsToScan };
+  MaxLoad.settle = { waitForSettle, waitForSettleOrModal, retryUntil, isBusy, docsToScan, whenIdle, actionState };
 })();

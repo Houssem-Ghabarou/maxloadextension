@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How MaxLoad Sets the Maximo Status — Explained</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --ink: #e7e9ee;
+    --muted: #9aa3b2; --line: #2a2f3a; --accent: #5b9dff; --good: #46c17a;
+    --warn: #e0a94a; --bad: #e0655a; --code: #0b0d11;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #ffffff; --panel2: #f0f2f5; --ink: #1b1f27;
+      --muted: #5a6472; --line: #e2e5ea; --accent: #1266d6; --good: #1e9e5a;
+      --warn: #b7791f; --bad: #c2402f; --code: #0f1420;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 40px 22px 96px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -.4px; }
+  .sub { color: var(--muted); font-size: 17px; margin: 0 0 28px; }
+  h2 {
+    font-size: 21px; margin: 40px 0 12px; padding-top: 18px;
+    border-top: 1px solid var(--line); letter-spacing: -.2px;
+  }
+  h3 { font-size: 16px; margin: 24px 0 8px; color: var(--accent); }
+  p { margin: 10px 0; }
+  .lead { font-size: 17px; }
+  code {
+    background: var(--panel2); padding: 1px 6px; border-radius: 5px;
+    font-family: "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 13.5px;
+  }
+  pre {
+    background: var(--code); color: #d7e0f0; padding: 14px 16px; border-radius: 10px;
+    overflow-x: auto; border: 1px solid var(--line); font-size: 13px; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; color: inherit; font-size: 13px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px 18px; margin: 16px 0;
+  }
+  .tag {
+    display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 9px;
+    border-radius: 999px; margin-right: 6px; vertical-align: middle;
+  }
+  .t-good { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+  .t-bad  { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+  .t-warn { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+  .callout { border-left: 3px solid var(--accent); padding: 8px 14px; margin: 16px 0; background: var(--panel); border-radius: 0 10px 10px 0; }
+  .callout.good { border-color: var(--good); }
+  .callout.bad { border-color: var(--bad); }
+  ol.flow { counter-reset: step; list-style: none; padding: 0; margin: 16px 0; }
+  ol.flow > li {
+    counter-increment: step; position: relative; padding: 12px 12px 12px 52px;
+    border: 1px solid var(--line); border-radius: 10px; margin: 8px 0; background: var(--panel);
+  }
+  ol.flow > li::before {
+    content: counter(step); position: absolute; left: 12px; top: 12px;
+    width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff;
+    display: grid; place-items: center; font-weight: 700; font-size: 14px;
+  }
+  ol.flow b { color: var(--ink); }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .files code { display: inline-block; margin: 2px 0; }
+  .kbd { font-size: 12px; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 30px 0; }
+  .diagram {
+    display: grid; gap: 10px; margin: 16px 0;
+    grid-template-columns: 1fr;
+  }
+  .lane { border: 1px dashed var(--line); border-radius: 10px; padding: 12px; }
+  .lane h4 { margin: 0 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .box { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; font-size: 13.5px; margin: 4px 0; }
+  .arrow { text-align: center; color: var(--muted); font-size: 18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>How MaxLoad reliably sets the Maximo status</h1>
+  <p class="sub">The “dropdown never opens” problem — and the native method that made it disappear.</p>
+
+  <p class="lead">Short version: instead of <em>simulating a user clicking</em> the status dropdown, we now ask Maximo to change the status using <strong>its own internal function</strong>. The menu never has to open on screen, so it can’t fail to open.</p>
+
+  <h2>1. Why the old way kept failing</h2>
+  <p>The Maximo status menu is <strong>not</strong> a normal <code>&lt;select&gt;</code> box. It’s a custom menu that Maximo builds with its own JavaScript. To change the status the “human” way you must:</p>
+  <ol class="flow">
+    <li>Click the little <b>dropdown arrow</b> next to the New Status field…</li>
+    <li>…wait for Maximo to <b>build and show</b> the menu…</li>
+    <li>…then click the <b>right option</b> in that menu.</li>
+  </ol>
+
+  <div class="callout bad">
+    <p><span class="tag t-bad">The trap</span> Maximo <strong>ignores fake (synthetic) clicks</strong>. A browser extension can fire a “click” event in JavaScript, but Maximo checks whether the click is a real one from the mouse/OS (<code>isTrusted</code>). Our synthetic clicks were being thrown away — so the arrow was “clicked,” but the menu never opened. Every later step then failed because the menu it needed wasn’t there.</p>
+  </div>
+
+  <h2>2. The breakthrough: Maximo tells us how to do it</h2>
+  <p>When you open the Change Status dialog, Maximo puts the whole status menu into the page — even before it’s visible. Looking at one option in the page source, each choice is a link like this:</p>
+
+<pre><code>&lt;a id="menu0_APPR_OPTION_a" role="menuitem"
+   href="javascript: topLevelMenus['shared'].menuClick(
+     {"text":"Approved","id":"APPR_OPTION","value":"APPR_OPTION",
+      "target":"status_menus","event":"click"});"&gt;
+   &lt;span&gt;Approved&lt;/span&gt;
+&lt;/a&gt;</code></pre>
+
+  <p>Two gifts are hidden in there:</p>
+  <ul>
+    <li><strong>The option’s internal code</strong> is baked into its id: <code>menu0_<b>APPR</b>_OPTION_a</code> → <code>APPR</code>. That code is the same in every language (English “Approved”, French “Approuvé”), so we can find the right option regardless of what language the screen is in.</li>
+    <li><strong>The exact function Maximo runs</strong> when you click it: <code>topLevelMenus['shared'].menuClick({…})</code>. If <em>we</em> call that function ourselves, we get the identical result as a real click — <em>without needing the menu to be open</em>.</li>
+  </ul>
+
+  <div class="callout good">
+    <p><span class="tag t-good">The idea</span> Find the option by its <strong>code</strong>, then run Maximo’s own <strong><code>menuClick</code></strong> for it. No arrow-click, no waiting for the menu to appear, no coordinates that can “miss.”</p>
+  </div>
+
+  <h2>3. The one obstacle — and how we get around it</h2>
+  <p>A browser extension normally runs in an <strong>isolated world</strong>: it can see and touch the page’s HTML, but it <em>cannot call the page’s own JavaScript functions</em> like <code>topLevelMenus</code>. That’s a security boundary.</p>
+  <p>The trick: an extension is allowed to inject a second script into the page’s <strong>MAIN world</strong> — the page’s own JavaScript realm — where <code>topLevelMenus</code> <em>does</em> exist. That injected script is our <strong>“bridge.”</strong> (Even Playwright/Puppeteer can’t reach page globals like this — only an extension can.)</p>
+
+  <div class="diagram">
+    <div class="lane">
+      <h4>Isolated world — the normal extension code</h4>
+      <div class="box">menu-select.js decides <em>which status</em> to set (code + known labels)</div>
+      <div class="arrow">│ sends a message ▼ &nbsp;&nbsp; <span class="muted">window.postMessage</span></div>
+    </div>
+    <div class="lane">
+      <h4>MAIN world — the bridge, inside the page</h4>
+      <div class="box">maximo-native.js receives the message</div>
+      <div class="arrow">▼</div>
+      <div class="box">Finds the option by code → calls <code>topLevelMenus['shared'].menuClick(payload)</code></div>
+      <div class="arrow">│ sends the result back ▲</div>
+    </div>
+  </div>
+
+  <p>The two halves talk over <code>window.postMessage</code> — the standard, safe way for these two worlds to pass small messages. Every request has a unique id so replies never get mixed up.</p>
+
+  <h2>4. What the bridge actually does</h2>
+
+  <h3>Finding the right options (and not the wrong menu)</h3>
+  <p>The page also has a <strong>“Select Action”</strong> toolbar menu (New Work Order, Change Status, Route Workflow…). It’s built the same way, so early on the bridge grabbed <em>it</em> by mistake. The fix: only accept options that belong to the <strong>status</strong> menu — either inside a menu tagged <code>target="status_menus"</code>, or whose <code>menuClick</code> payload says <code>"target":"status_menus"</code>.</p>
+
+<pre><code>// only real status options — never the "Select Action" toolbar menu
+ul[target*='status']  →  its &lt;a&gt; menu items
+// fallback: an _OPTION link whose payload contains "status_menus"</code></pre>
+
+  <h3>Selecting — the core move</h3>
+  <p>Given a status code (e.g. <code>INPRG</code>), the bridge finds the matching option and runs Maximo’s own click handler:</p>
+
+<pre><code>function invokeOption(a) {
+  // read the exact payload Maximo embedded in the link
+  const payload = JSON.parse( /menuClick\((\{.*?\})\)/.exec(a.href)[1] );
+  // call Maximo's own function — same as a real click, no menu needed
+  window.topLevelMenus.shared.menuClick(payload);
+}</code></pre>
+
+  <p class="muted">If for some reason <code>topLevelMenus</code> isn’t reachable, it falls back to clicking the link, which runs the same <code>javascript:</code> code.</p>
+
+  <h3>Opening — only if the menu isn’t built yet</h3>
+  <p>Some screens build the menu lazily (only when you first open it). If the bridge doesn’t find the status options, it locates the <strong>New Status</strong> field — by the id we captured while teaching, or by its label (“New Status” / “Nouveau statut”) — finds its arrow, triggers Maximo’s native open, waits briefly, then selects. In your case the menu is already built when the dialog opens, so this step is usually skipped.</p>
+
+  <h2>5. The full journey of one status step</h2>
+  <ol class="flow">
+    <li>During a run, the status step asks: “set status to <b>INPRG</b>.”</li>
+    <li>The isolated code turns your value into a <b>code + known labels</b> and messages the bridge in every frame.</li>
+    <li>The frame that owns the status menu answers; the others say <b>“not here.”</b></li>
+    <li>The bridge finds the <code>INPRG</code> option and runs <b>Maximo’s <code>menuClick</code></b>.</li>
+    <li>Maximo sets the status itself. The field updates. Done — <b>the dropdown never had to open</b>.</li>
+  </ol>
+  <p>If the native path can’t run (a screen with no <code>topLevelMenus</code>), it quietly <strong>falls back</strong> to the old trusted-click method, so nothing breaks.</p>
+
+  <h2>6. How you tested it</h2>
+  <p>You talked to the bridge straight from the browser console. The message asks a question; the bridge answers.</p>
+
+  <p><strong>Ask what it can see</strong> (safe — changes nothing):</p>
+<pre><code>new Promise(r=&gt;{const id="t"+Math.random();
+addEventListener("message",function h(e){const d=e.data;
+  if(d&amp;&amp;d.__mlNative&amp;&amp;d.dir==="res"&amp;&amp;d.id===id){removeEventListener("message",h);r(d)}});
+postMessage({__mlNative:true,dir:"req",id,op:"probe",args:{}},"*")})
+.then(x=&gt;console.log("PROBE:",x.result||x));</code></pre>
+  <p>→ returned <code>{v:3, here:true, built:true, codes:[APPR, INPRG, WAPPR, …]}</code> — real statuses. ✅</p>
+
+  <p><strong>Actually set one:</strong> the same message with <code>op:"setStatus"</code> and <code>args:{code:"INPRG", …}</code> → returned <code>{ok:true, code:"INPRG", label:"In progress"}</code>, and the field changed on the real screen. ✅</p>
+
+  <h2>7. Where this works</h2>
+  <table>
+    <tr><th>Environment</th><th>Works?</th><th>Why</th></tr>
+    <tr><td>Maximo 7.5 / 7.6 (classic web UI)</td><td><span class="tag t-good">Yes</span></td><td>Uses <code>topLevelMenus</code> / <code>status_menus</code></td></tr>
+    <tr><td>MAS 8 “Manage” — classic UI</td><td><span class="tag t-good">Yes</span></td><td>Same classic runtime (this is your setup)</td></tr>
+    <tr><td>Any language (EN / FR / …)</td><td><span class="tag t-good">Yes</span></td><td>Matches by internal code, not visible text</td></tr>
+    <tr><td>Custom synonym domains (ATT_EXEC, ENCOURS…)</td><td><span class="tag t-good">Yes</span></td><td>Code lives in the option id</td></tr>
+    <tr><td>Maximo Mobile / new React (Carbon) screens</td><td><span class="tag t-warn">Falls back</span></td><td>Different DOM, no <code>topLevelMenus</code> — safely uses the click method instead</td></tr>
+  </table>
+
+  <h2>Files involved</h2>
+  <div class="card files">
+    <p><code>content/maximo-native.js</code> — <span class="muted">the bridge (runs in the page’s MAIN world); finds options and calls <code>menuClick</code>.</span></p>
+    <p><code>content/menu-select.js</code> — <span class="muted">the isolated-world logic; resolves the value to a code and messages the bridge first, then falls back to clicking.</span></p>
+    <p><code>manifest.json</code> — <span class="muted">registers the bridge as a <code>world:"MAIN"</code> content script.</span></p>
+  </div>
+
+  <hr>
+  <p class="muted kbd">MaxLoad — native status method. Open this file in any browser. Bridge version 3.</p>
+
+</div>
+</body>
+</html>

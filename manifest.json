@@ -39,7 +39,7 @@
       "match_about_blank": true,
       "run_at": "document_idle",
       "world": "MAIN",
-      "js": ["content/maximo-native.js"]
+      "js": ["content/action-tracker.js", "content/maximo-native.js"]
     },
     {
       "matches": ["<all_urls>"],
