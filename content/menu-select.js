@@ -27,7 +27,9 @@
     return MaxLoad.dom.collectDocuments(document);
   }
   function optText(a) {
-    return MaxLoad.util.elementText ? MaxLoad.util.elementText(a, 60) : (a.textContent || "").trim();
+    return MaxLoad.util.elementText
+      ? MaxLoad.util.elementText(a, 60)
+      : (a.textContent || "").trim();
   }
 
   // ---- option code from an id -----------------------------------------------
@@ -51,7 +53,9 @@
     for (const doc of docs()) {
       let uls;
       try {
-        uls = doc.querySelectorAll("ul[role=menu][target*='status' i], ul[target*='status' i], [data-menu-div][target*='status' i]");
+        uls = doc.querySelectorAll(
+          "ul[role=menu][target*='status' i], ul[target*='status' i], [data-menu-div][target*='status' i]"
+        );
       } catch (_) {
         continue;
       }
@@ -64,7 +68,9 @@
     for (const root of statusMenus()) {
       let els;
       try {
-        els = root.querySelectorAll("a[role=menuitem], a[id*='_OPTION'], li[eventtype] > a[href]");
+        els = root.querySelectorAll(
+          "a[role=menuitem], a[id*='_OPTION'], li[eventtype] > a[href]"
+        );
       } catch (_) {
         continue;
       }
@@ -105,10 +111,12 @@
   /** From a clicked option, capture how the menu was opened (id + stable anchors). */
   function openerOf(optionEl) {
     const doc = (optionEl && optionEl.ownerDocument) || document;
-    let menu = optionEl && optionEl.closest && optionEl.closest("[data-opener-id]");
+    let menu =
+      optionEl && optionEl.closest && optionEl.closest("[data-opener-id]");
     if (!menu) {
       const opts = menuOptions();
-      if (opts.length && opts[0].closest) menu = opts[0].closest("[data-opener-id]");
+      if (opts.length && opts[0].closest)
+        menu = opts[0].closest("[data-opener-id]");
     }
     const openerId = (menu && menu.getAttribute("data-opener-id")) || "";
     const opener = openerId ? doc.getElementById(openerId) : null;
@@ -123,7 +131,7 @@
       binding:
         field && MaxLoad.binder && MaxLoad.binder.captureBinding
           ? MaxLoad.binder.captureBinding("field", field)
-          : null
+          : null,
     };
   }
 
@@ -226,7 +234,14 @@
       el.focus();
       const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
       const K = win.KeyboardEvent || KeyboardEvent;
-      const opt = { key, code: key, keyCode, which: keyCode, bubbles: true, cancelable: true };
+      const opt = {
+        key,
+        code: key,
+        keyCode,
+        which: keyCode,
+        bubbles: true,
+        cancelable: true,
+      };
       el.dispatchEvent(new K("keydown", opt));
       el.dispatchEvent(new K("keypress", opt));
       el.dispatchEvent(new K("keyup", opt));
@@ -242,7 +257,9 @@
     for (const doc of docs()) {
       let els;
       try {
-        els = doc.querySelectorAll("input[li], [role=combobox][li], input[role=combobox]");
+        els = doc.querySelectorAll(
+          "input[li], [role=combobox][li], input[role=combobox]"
+        );
       } catch (_) {
         continue;
       }
@@ -272,7 +289,9 @@
     const deadline = MaxLoad.util.now() + 10000;
     const tryOpen = async (fn, waitMs) => {
       if (menuOpen()) return true;
-      try { await fn(); } catch (_) {}
+      try {
+        await fn();
+      } catch (_) {}
       return await waitForMenu(waitMs);
     };
 
@@ -284,11 +303,17 @@
       // by its label, then every combobox on screen. Re-resolved each pass so a
       // still-rendering dialog is picked up as soon as it appears.
       const cands = [];
-      const push = (el) => { if (el && !cands.includes(el)) cands.push(el); };
-      if (opener && opener.binding && MaxLoad.binder) push(MaxLoad.binder.locate(opener.binding));
+      const push = (el) => {
+        if (el && !cands.includes(el)) cands.push(el);
+      };
+      if (opener && opener.binding && MaxLoad.binder)
+        push(MaxLoad.binder.locate(opener.binding));
       if (opener && opener.near) push(fieldByLabel(opener.near));
       for (const f of comboFields()) push(f);
-      if (!cands.length) { await MaxLoad.util.sleep(300); continue; } // dialog not ready
+      if (!cands.length) {
+        await MaxLoad.util.sleep(300);
+        continue;
+      } // dialog not ready
 
       for (const field of cands) {
         const arrow = arrowForField(field) || resolveOpener(opener);
@@ -297,14 +322,24 @@
         // drops the menu — exactly what your hand does. Escalate: trusted click on
         // the field (big target), trusted click on the arrow, a trusted ArrowDown,
         // then synthetic clicks as a last-ditch (for non-Maximo combos only).
-        if (field && await tryOpen(() => MaxLoad.input.click(field), 800)) return true;
-        if (arrow && await tryOpen(() => MaxLoad.input.click(arrow), 800)) return true;
-        if (field && await tryOpen(async () => {
-          try { field.focus(); } catch (_) {}
-          await MaxLoad.input.pressKey("ArrowDown");
-        }, 500)) return true;
-        if (field && await tryOpen(() => MaxLoad.util.realClick(field), 400)) return true;
-        if (arrow && await tryOpen(() => MaxLoad.util.realClick(arrow), 400)) return true;
+        if (field && (await tryOpen(() => MaxLoad.input.click(field), 800)))
+          return true;
+        if (arrow && (await tryOpen(() => MaxLoad.input.click(arrow), 800)))
+          return true;
+        if (
+          field &&
+          (await tryOpen(async () => {
+            try {
+              field.focus();
+            } catch (_) {}
+            await MaxLoad.input.pressKey("ArrowDown");
+          }, 500))
+        )
+          return true;
+        if (field && (await tryOpen(() => MaxLoad.util.realClick(field), 400)))
+          return true;
+        if (arrow && (await tryOpen(() => MaxLoad.util.realClick(arrow), 400)))
+          return true;
       }
       await MaxLoad.util.sleep(200);
     }
@@ -316,15 +351,20 @@
    *  stays true when unrelated _OPTION anchors linger in the DOM). Escalate
    *  through methods until one takes. */
   async function pickOption(optEl) {
-    const inner = (optEl.querySelector && optEl.querySelector("span, div")) || optEl;
+    const inner =
+      (optEl.querySelector && optEl.querySelector("span, div")) || optEl;
     const methods = [
       () => MaxLoad.util.realClick(optEl), // synthetic click on the anchor
       () => MaxLoad.util.realClick(inner), // synthetic click on the visible label
       () => fireKeyOn(optEl, "Enter", 13), // keyboard Enter on the option
-      async () => { await MaxLoad.input.click(optEl); } // trusted CDP click
+      async () => {
+        await MaxLoad.input.click(optEl);
+      }, // trusted CDP click
     ];
     for (const m of methods) {
-      try { await m(); } catch (_) {}
+      try {
+        await m();
+      } catch (_) {}
       if (await pollGone(optEl, 700)) return true;
     }
     return !isVisible(optEl);
@@ -332,14 +372,20 @@
 
   // ---- choose the option -----------------------------------------------------
   function normCode(v) {
-    return String(v || "").trim().toUpperCase().replace(/\s+/g, "_");
+    return String(v || "")
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, "_");
   }
   /** Lowercase, strip accents + punctuation — so "Complétée" == "completee" and
    *  "En attente d'approbation" matches regardless of accents/apostrophes. */
   function normText(s) {
     return String(s || "")
-      .normalize("NFD").replace(/[̀-ͯ]/g, "")
-      .toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
   }
 
   // Canonical Maximo status CODE -> known display labels (English + French, incl.
@@ -356,7 +402,11 @@
     CAN: ["Canceled", "Cancelled", "Annulé", "Annulée"],
     WMATL: ["Waiting on Material", "En attente de matériel"],
     WSCH: ["Waiting to be Scheduled", "En attente de planification"],
-    WPCOND: ["Waiting on Plant Conditions", "Waiting on plant cond", "En attente des conditions d'usine"],
+    WPCOND: [
+      "Waiting on Plant Conditions",
+      "Waiting on plant cond",
+      "En attente des conditions d'usine",
+    ],
     SCHED: ["Scheduled", "Planifié", "Planifiée"],
     DEFERRED: ["Deferred", "Reporté", "Différé"],
     HISTEDIT: ["History Edited"],
@@ -371,18 +421,20 @@
     COMPLETEE: ["Complétée"],
     ENCOURS: ["Encours"],
     TERMINEE: ["Terminée"],
-    REJETEE: ["Rejetée", "Rejeté"]
+    REJETEE: ["Rejetée", "Rejeté"],
   };
   // reverse index: normalized code OR label -> canonical code
   const LABEL_TO_CODE = {};
   for (const code in STATUS_SYNONYMS) {
     LABEL_TO_CODE[normCode(code)] = code;
-    for (const lbl of STATUS_SYNONYMS[code]) LABEL_TO_CODE[normText(lbl)] = code;
+    for (const lbl of STATUS_SYNONYMS[code])
+      LABEL_TO_CODE[normText(lbl)] = code;
   }
 
   /** Any value (code or label, any language) -> canonical code + all aliases. */
   function synonymsFor(value) {
-    const code = LABEL_TO_CODE[normCode(value)] || LABEL_TO_CODE[normText(value)] || null;
+    const code =
+      LABEL_TO_CODE[normCode(value)] || LABEL_TO_CODE[normText(value)] || null;
     const wants = new Set();
     if (code) {
       wants.add(normCode(code));
@@ -396,8 +448,11 @@
     const li = (a.closest && a.closest("li")) || a;
     let c = codeFromId(a.id) || codeFromId(li.id);
     if (c) return c;
-    const hay = (a.getAttribute("href") || "") + " " + (a.getAttribute("onclick") || "");
-    const mv = hay.match(/["']value["']\s*:\s*["']([^"']+)["']/i) || hay.match(/["']id["']\s*:\s*["']([^"']+)["']/i);
+    const hay =
+      (a.getAttribute("href") || "") + " " + (a.getAttribute("onclick") || "");
+    const mv =
+      hay.match(/["']value["']\s*:\s*["']([^"']+)["']/i) ||
+      hay.match(/["']id["']\s*:\s*["']([^"']+)["']/i);
     return mv ? String(mv[1]).replace(/_OPTION.*$/i, "") : "";
   }
 
@@ -437,14 +492,23 @@
       for (const a of menuOptions()) {
         const code = normCode(optionCode(a));
         const label = normText(optText(a));
-        if ((code && syn.wants.has(code)) || (label && syn.wants.has(label))) return a;
+        if ((code && syn.wants.has(code)) || (label && syn.wants.has(label)))
+          return a;
       }
     }
     return null;
   }
 
   function listCodes() {
-    return [...new Set(menuOptions().map((a) => optionCode(a) || optText(a)).filter(Boolean))].slice(0, 16).join(", ");
+    return [
+      ...new Set(
+        menuOptions()
+          .map((a) => optionCode(a) || optText(a))
+          .filter(Boolean)
+      ),
+    ]
+      .slice(0, 16)
+      .join(", ");
   }
 
   // ==== NATIVE bridge client (talks to maximo-native.js in the MAIN world) ====
@@ -457,7 +521,8 @@
    *  { ok, ... } or a { ok:false, reason } on timeout / no bridge. */
   function nativeCall(win, op, args, timeoutMs) {
     return new Promise((resolve) => {
-      const id = "mln-" + ++nativeSeq + "-" + Math.random().toString(36).slice(2, 7);
+      const id =
+        "mln-" + ++nativeSeq + "-" + Math.random().toString(36).slice(2, 7);
       let done = false;
       const finish = (val) => {
         if (done) return;
@@ -467,8 +532,12 @@
       };
       const onMsg = (ev) => {
         const d = ev.data;
-        if (!d || d.__mlNative !== true || d.dir !== "res" || d.id !== id) return;
-        finish(d.result || (d.ok ? { ok: true } : { ok: false, reason: d.error || "err" }));
+        if (!d || d.__mlNative !== true || d.dir !== "res" || d.id !== id)
+          return;
+        finish(
+          d.result ||
+            (d.ok ? { ok: true } : { ok: false, reason: d.error || "err" })
+        );
       };
       window.addEventListener("message", onMsg, false);
       try {
@@ -477,7 +546,10 @@
         finish({ ok: false, reason: "post-failed" });
         return;
       }
-      setTimeout(() => finish({ ok: false, reason: "timeout" }), timeoutMs || 4000);
+      setTimeout(
+        () => finish({ ok: false, reason: "timeout" }),
+        timeoutMs || 4000
+      );
     });
   }
 
@@ -504,7 +576,8 @@
       if (!remaining) return resolve(fallback);
       const settle = (r) => {
         if (r && r.ok) return resolve(r);
-        if (r && r.reason && r.reason !== "not-here" && r.reason !== "timeout") fallback = { ok: false, reason: r.reason };
+        if (r && r.reason && r.reason !== "not-here" && r.reason !== "timeout")
+          fallback = { ok: false, reason: r.reason };
         if (--remaining === 0) resolve(fallback);
       };
       for (const p of promises) p.then(settle, () => settle(null));
@@ -518,16 +591,19 @@
     const syn = synonymsFor(value);
     const code = syn.code || normCode(value);
     const labels = [];
-    if (syn.code && STATUS_SYNONYMS[syn.code]) labels.push(...STATUS_SYNONYMS[syn.code]);
+    if (syn.code && STATUS_SYNONYMS[syn.code])
+      labels.push(...STATUS_SYNONYMS[syn.code]);
     labels.push(value);
     const args = {
       code,
       labels,
       openerId: (opener && opener.id) || "",
       fieldId: (opener && opener.binding && opener.binding.id) || "",
-      near: (opener && opener.near) || "" // the field label, e.g. "New Status"
+      near: (opener && opener.near) || "", // the field label, e.g. "New Status"
     };
-    return firstOk(candidateWindows().map((w) => nativeCall(w, "setStatus", args, 6000)));
+    return firstOk(
+      candidateWindows().map((w) => nativeCall(w, "setStatus", args, 6000))
+    );
   }
 
   /**
@@ -547,18 +623,30 @@
     try {
       const nat = await nativeSetStatus(v, opener);
       if (nat && nat.ok) {
-        await MaxLoad.settle.waitForSettleOrModal({ quietMs: 200, timeoutMs: 600 });
+        await MaxLoad.settle.waitForSettleOrModal({
+          quietMs: 200,
+          timeoutMs: 600,
+        });
         return { ok: true, code: nat.code, label: nat.label, via: "native" };
       }
-      MaxLoad.log && MaxLoad.log("native status set unavailable (" + (nat && nat.reason) + ") — using click flow");
+      MaxLoad.log &&
+        MaxLoad.log(
+          "native status set unavailable (" +
+            (nat && nat.reason) +
+            ") — using click flow"
+        );
     } catch (e) {
-      MaxLoad.warn && MaxLoad.warn("native status set error: " + String(e && e.message ? e.message : e));
+      MaxLoad.warn &&
+        MaxLoad.warn(
+          "native status set error: " + String(e && e.message ? e.message : e)
+        );
     }
 
     // 1. OPEN the menu — by OUTCOME (several methods, each verified). Returns fast
     //    if the preceding opener click already opened it.
     let open = await openMenu(opener);
-    if (!open) return { ok: false, message: "could not open the status dropdown" };
+    if (!open)
+      return { ok: false, message: "could not open the status dropdown" };
 
     // 2. find the option: exact code -> exact text -> static synonym dictionary
     let opt = findOption(v);
@@ -566,14 +654,21 @@
     // 2b. WRONG menu open (the opener-click may have hit a different combo's
     //     arrow)? Close it and re-open the RIGHT one via the field label, retry.
     if (!opt && opener && (opener.near || opener.title || opener.id)) {
-      try { await MaxLoad.input.pressKey("Escape"); } catch (_) {}
+      try {
+        await MaxLoad.input.pressKey("Escape");
+      } catch (_) {}
       await MaxLoad.util.sleep(150);
       if (await openMenu(opener)) opt = findOption(v);
     }
 
     if (!opt) {
-      try { await MaxLoad.input.pressKey("Escape"); } catch (_) {}
-      return { ok: false, message: `"${v}" not offered by the list (options: ${listCodes()})` };
+      try {
+        await MaxLoad.input.pressKey("Escape");
+      } catch (_) {}
+      return {
+        ok: false,
+        message: `"${v}" not offered by the list (options: ${listCodes()})`,
+      };
     }
 
     // 3. PICK — by OUTCOME (synthetic first, verify the menu closed, else CDP).
@@ -582,7 +677,11 @@
     const label = optText(opt);
     const picked = await pickOption(opt);
     await MaxLoad.settle.waitForSettleOrModal({ quietMs: 200, timeoutMs: 600 });
-    if (!picked) return { ok: false, message: `found "${v}" but the option click didn't register` };
+    if (!picked)
+      return {
+        ok: false,
+        message: `found "${v}" but the option click didn't register`,
+      };
     return { ok: true, code, label };
   }
 
@@ -596,6 +695,6 @@
     menuOpen,
     menuOptions,
     openMenu,
-    resolveOpener
+    resolveOpener,
   };
 })();
