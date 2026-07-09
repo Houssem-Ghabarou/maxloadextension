@@ -74,6 +74,7 @@
         "ui/panel.html",
         "ui/panel.js",
         "ui/panel.css",
+        "ui/dialog.js",
         "ui/workflow-editor.html",
         "ui/workflow-editor.js",
         "rules/default-rules.json",

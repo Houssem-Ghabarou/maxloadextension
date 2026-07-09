@@ -17,7 +17,7 @@
   <nav>
     <button data-tab="record" class="active">Teach</button>
     <button data-tab="run">Run</button>
-    <button data-tab="workflows">Workflows</button>
+    <button data-tab="workflows">Teaches</button>
     <button data-tab="logs">Logs</button>
     <button data-tab="settings">Settings</button>
   </nav>
@@ -63,29 +63,37 @@
 
     <!-- TEACH — MaxLoad follows what you do, then you edit -->
     <section class="tab active" id="tab-record">
-      <h2>1 · Load your Excel</h2>
-      <label class="field">
+      <h2>1 · Load your data</h2>
+      <div class="filepick">
         <input type="file" id="recFile" accept=".xlsx,.xls,.csv" />
-      </label>
-      <p class="hint" id="recCols">Load your data file so its columns appear in the mapping menus below.</p>
+        <label for="recFile" class="filepick-btn">📄 Choose Excel / CSV…</label>
+        <span class="filepick-name" id="recFileName">No file chosen yet</span>
+      </div>
+      <p class="hint" id="recCols">Load your data file first — its columns feed the mapping menus, and Start unlocks once it's loaded.</p>
 
-      <h2>2 · Record — do it once</h2>
+      <h2>2 · Teach it once</h2>
       <label class="field">
-        <span>This recording is for…</span>
+        <span>This teach</span>
         <select id="recAction">
-          <option value="CREATE">CREATE — new records</option>
-          <option value="UPDATE">UPDATE — search &amp; edit existing</option>
+          <option value="CREATE">Enters data — create or update per row</option>
         </select>
       </label>
       <div class="row">
-        <button class="btn primary" id="recStart">● Start recording</button>
-        <button class="btn" id="recStop" disabled>■ Stop &amp; save</button>
+        <button class="btn primary" id="recStart" disabled title="Load a data file first">● Start teaching</button>
+        <button class="btn" id="recStop" disabled>■ Stop</button>
         <span id="recState" class="chip">idle</span>
       </div>
-      <p class="hint">MaxLoad <b>follows every action</b>: click New, click into each field (no typing needed), navigate/search, click Save. Each becomes a step below.</p>
+      <div class="savebar" id="recSaveBar" style="margin-top:8px">
+        <label class="field" style="flex:1;margin:0">
+          <input type="text" id="recName" placeholder="Name this teach — e.g. Work Order entry" />
+        </label>
+        <button class="btn primary" id="recSave" disabled>💾 Save teach</button>
+        <span id="recSaveStatus" class="chip"></span>
+      </div>
+      <p class="hint" id="recSaveHint">MaxLoad <b>follows every action</b> — click New, click into fields, search, Save. Press <b>Stop</b> when done, then name it and click <b>Save teach</b>. Nothing is saved until you do.</p>
 
-      <h2>3 · Edit the steps <span class="muted" style="text-transform:none">— map columns, delete extras</span></h2>
-      <p class="hint">For each <b>field</b> step, choose which Excel column fills it (default: don't fill). Delete any step you don't want with ✕. Reorder with ▲▼. This exact sequence replays for every row.</p>
+      <h2>3 · Review &amp; map the steps <span class="muted" style="text-transform:none">— map columns, delete extras</span></h2>
+      <p class="hint">For each <b>field</b> step, choose which Excel column fills it (default: don't fill). Delete any step with ✕, reorder with ▲▼. This exact sequence replays for every row.</p>
       <ul class="list" id="recSteps"></ul>
     </section>
 
@@ -93,43 +101,60 @@
     <section class="tab" id="tab-run">
       <div class="row" style="margin-bottom:6px">
         <span id="stateLine" class="chip" style="flex:1;text-align:left">📍 where am I?</span>
-        <button class="btn" id="stateRefresh" style="padding:3px 8px">↻</button>
+        <button class="btn" id="stateRefresh" style="padding:3px 8px" title="Re-read the page">↻</button>
       </div>
+
+      <h2>1 · Choose a teach</h2>
       <label class="field">
-        <span>Workflow</span>
         <select id="runWorkflow"></select>
       </label>
       <div id="scenario" class="card" style="display:none"></div>
-      <label class="field">
-        <span>Data file (.xlsx or .csv)</span>
+
+      <h2>2 · Load the rows to enter</h2>
+      <div class="filepick">
         <input type="file" id="runFile" accept=".xlsx,.xls,.csv" />
-      </label>
-      <p class="hint" id="fileHint">Columns: <code>_action</code>, <code>_key_field</code>, <code>_key_value</code> (UPDATE), plus one column per attribute. Empty cells are never written.</p>
+        <label for="runFile" class="filepick-btn">📄 Choose Excel / CSV…</label>
+        <span class="filepick-name" id="runFileName">No file chosen yet</span>
+      </div>
+      <p class="hint" id="fileHint">Columns: <code>_action</code>, <code>_key_field</code>, <code>_key_value</code> (for updates), plus one column per attribute. Empty cells are never written.</p>
       <div id="preview"></div>
+
+      <h2>3 · Run</h2>
       <div class="row">
-        <button class="btn" id="dryRun">Dry-run</button>
-        <button class="btn" id="runOne" disabled>▶ Run 1 row (watch)</button>
-        <button class="btn primary" id="runStart" disabled>▶▶ Run all</button>
-        <button class="btn danger" id="runCancel" disabled>Cancel</button>
+        <button class="btn" id="dryRun" title="Check every step resolves — nothing is saved">✓ Dry-run</button>
+        <button class="btn" id="runOne" disabled title="Run just the first row so you can watch it">▶ Watch row 1</button>
+        <button class="btn primary" id="runStart" disabled>▶▶ Run all rows</button>
+        <button class="btn danger" id="runCancel" disabled>■ Stop</button>
       </div>
       <div class="progress"><i id="progBar"></i></div>
       <div id="progText" class="hint"></div>
       <div class="row" id="resultRow" style="display:none">
+        <span class="muted" style="font-size:11px">Download anytime — even mid-run:</span>
         <button class="btn" id="dlResults">⬇ Results CSV</button>
         <button class="btn" id="dlFailed">⬇ Failed rows (re-runnable)</button>
       </div>
       <ul class="list log" id="runFeed"></ul>
-      <div class="row" style="margin-top:8px">
-        <button class="btn" id="teachModal" style="flex:1">🔧 Teach the modal on screen</button>
+
+      <div class="card accent" id="teachModalCard">
+        <div class="row">
+          <div style="flex:1">
+            <strong>🔧 Popup handled wrong?</strong>
+            <div class="meta">Leave the Maximo popup open, click here, and tell MaxLoad which button to press and whether that row failed. It remembers forever.</div>
+          </div>
+        </div>
+        <button class="btn accent block" id="teachModal" style="margin-top:8px">🔧 Teach the modal on screen</button>
       </div>
-      <p class="hint">If MaxLoad ever mishandles a popup: leave it open, click this, and tell MaxLoad which button to press and whether that row failed or is fine. It remembers that modal forever.</p>
     </section>
 
-    <!-- WORKFLOWS -->
+    <!-- SAVED TEACHES -->
     <section class="tab" id="tab-workflows">
-      <h2>Saved workflows</h2>
+      <div class="row">
+        <h2 style="flex:1;margin:0">Saved teaches</h2>
+        <button class="btn" id="teachImport">⬆ Import</button>
+        <input type="file" id="teachImportFile" accept=".json" hidden />
+      </div>
       <div id="wfList"></div>
-      <p class="hint">Open the editor to view/edit the recorded step JSON.</p>
+      <p class="hint">Export a teach to share it, or Import one someone sent you. Open the editor to view/edit the recorded step JSON.</p>
     </section>
 
     <!-- LOGS -->
@@ -140,6 +165,21 @@
         <button class="btn" id="logExport">Export</button>
         <button class="btn danger" id="logClear">Clear</button>
       </div>
+      <div class="row filterbar">
+        <input type="search" id="logSearch" placeholder="🔎 filter text…" />
+        <select id="logLevel" title="Filter by level">
+          <option value="">All levels</option>
+          <option value="error">Errors</option>
+          <option value="warn">Warnings</option>
+          <option value="log">Info</option>
+          <option value="debug">Debug</option>
+        </select>
+        <select id="logSort" title="Sort order">
+          <option value="desc">Newest first</option>
+          <option value="asc">Oldest first</option>
+        </select>
+      </div>
+      <div class="meta" id="logCount" style="margin:2px 0"></div>
       <div class="log" id="logView"></div>
     </section>
 
@@ -191,6 +231,7 @@
 
   <!-- SheetJS (bundled) enables .xlsx parsing; panel.js falls back to CSV if absent. -->
   <script src="../lib/xlsx.full.min.js"></script>
+  <script src="dialog.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>

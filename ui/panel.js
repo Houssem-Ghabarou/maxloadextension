@@ -104,50 +104,85 @@
 
   // ---- TEACH (record + auto-bind) -------------------------------------------
   let teachColumns = [];
+  let lastTeach = null; // the workflow captured at Stop; saved on demand in step 4
 
   $("#recFile").addEventListener("change", async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    setFileName("recFile", file.name);
     try {
       const rows = await readFile(file);
       parsedRows = rows;
       teachColumns = Object.keys(rows[0] || {}).filter((c) => !["_action", "_key_value"].includes(c));
-      $("#recCols").innerHTML = `Loaded <b>${rows.length}</b> rows. Columns: <code>${teachColumns.join(", ")}</code>`;
+      $("#recCols").innerHTML = `Loaded <b>${rows.length}</b> rows. Columns: <code>${escapeHtml(teachColumns.join(", "))}</code>`;
+      $("#recStart").disabled = false;
+      $("#recStart").title = "";
     } catch (err) {
       $("#recCols").innerHTML = `<span style="color:#d64545">Parse error: ${escapeHtml(err.message)}</span>`;
+      $("#recStart").disabled = true;
     }
   });
 
   $("#recStart").addEventListener("click", async () => {
+    if ($("#recStart").disabled) return;
     const action = $("#recAction").value;
     const r = await sendCmd({ type: "ml:cmd:start-recording", action, columns: teachColumns });
     if (r && r.ok) {
       $("#recStart").disabled = true;
       $("#recStop").disabled = false;
+      $("#recSave").disabled = true;
+      $("#recSaveStatus").textContent = "";
       const s = $("#recState");
-      s.textContent = "teaching " + action;
+      s.textContent = "● teaching…";
       s.className = "chip rec";
     } else {
-      alert("Could not start — is the MaxLoad content script on this page? " + (r && r.error || ""));
+      await mlAlert("Could not start — is the MaxLoad content script on this page? " + (r && r.error || ""));
     }
   });
 
+  // Stop ONLY stops listening — the steps stay editable; saving is a separate step.
   $("#recStop").addEventListener("click", async () => {
     const r = await sendCmd({ type: "ml:cmd:stop-recording" });
-    $("#recStart").disabled = false;
+    $("#recStart").disabled = !parsedRows;
     $("#recStop").disabled = true;
-    $("#recState").textContent = "idle";
+    $("#recState").textContent = "stopped";
     $("#recState").className = "chip";
-    if (r && r.ok && r.workflow) {
-      const wf = r.workflow;
+    const wf = r && r.ok && r.workflow;
+    if (wf) {
+      lastTeach = wf;
+      const nSteps = (wf.steps || []).length;
       const nMapped = (wf.columns || []).length;
-      const name = prompt(`Name this workflow (${wf.steps.length} steps, ${nMapped} mapped fields):`, wf.name) || wf.name;
-      wf.name = name;
-      await saveWorkflow(wf);
-      alert(`Saved "${name}" — ${wf.steps.length} steps, ${nMapped} fields mapped to columns.`);
-      renderWorkflowOptions();
+      if (!$("#recName").value.trim()) $("#recName").value = wf.name || "";
+      $("#recSave").disabled = nSteps === 0;
+      $("#recSaveStatus").textContent = "";
+      $("#recSaveHint").innerHTML = nSteps
+        ? `Recorded <b>${nSteps}</b> steps, <b>${nMapped}</b> mapped to columns. Name it and click <b>Save teach</b>.`
+        : "Nothing was recorded — press Start and act on the Maximo screen.";
     }
   });
+
+  // Save is independent: rebuild from the CURRENT (post-stop-edited) state, name it, persist.
+  $("#recSave").addEventListener("click", saveTeachNow);
+  $("#recName").addEventListener("keydown", (e) => { if (e.key === "Enter") saveTeachNow(); });
+
+  async function saveTeachNow() {
+    if ($("#recSave").disabled) return;
+    const name = $("#recName").value.trim();
+    if (!name) { $("#recName").focus(); flashSave("name it first", false); return; }
+    const r = await sendCmd({ type: "ml:cmd:build-workflow", name });
+    const wf = (r && r.ok && r.workflow) || (lastTeach ? { ...lastTeach, name } : null);
+    if (!wf || !(wf.steps || []).length) { flashSave("nothing to save", false); return; }
+    await saveWorkflow(wf);
+    lastTeach = wf;
+    flashSave("✓ saved", true);
+    renderWorkflowOptions();
+  }
+  function flashSave(text, ok) {
+    const s = $("#recSaveStatus");
+    s.textContent = text;
+    s.className = "chip " + (ok ? "ok" : "");
+    if (ok) setTimeout(() => { s.textContent = ""; s.className = "chip"; }, 2500);
+  }
 
   function colMenu(step) {
     const sel = document.createElement("select");
@@ -287,7 +322,7 @@
     const box = $("#wfList");
     box.innerHTML = "";
     if (!list.length) {
-      box.appendChild(el("p", "muted", "No workflows yet — record one from the Record tab."));
+      box.appendChild(el("p", "muted", "No teaches yet — create one in the Teach tab, or Import one above."));
       return;
     }
     for (const wf of list) {
@@ -304,7 +339,7 @@
       exp.addEventListener("click", () => download(wf.name + ".json", JSON.stringify(wf, null, 2)));
       const del = el("button", "btn danger", "Delete");
       del.addEventListener("click", async () => {
-        if (confirm(`Delete "${wf.name}"?`)) {
+        if (await mlConfirm(`Delete "${wf.name}"?`)) {
           await deleteWorkflow(wf.id);
           renderWorkflows();
           renderWorkflowOptions();
@@ -320,6 +355,33 @@
     const url = chrome.runtime.getURL("ui/workflow-editor.html") + "?id=" + encodeURIComponent(id);
     chrome.tabs.create({ url });
   }
+
+  // ---- import teaches (JSON exported from here, or an array of them) ---------
+  $("#teachImport").addEventListener("click", () => $("#teachImportFile").click());
+  $("#teachImportFile").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const items = Array.isArray(data) ? data : [data];
+      let n = 0;
+      for (const raw of items) {
+        if (!raw || (!Array.isArray(raw.steps) && !raw.bindings)) continue; // must look like a teach
+        const wf = { ...raw };
+        wf.id = "wf-" + Date.now().toString(36) + "-" + n; // fresh id so it never clobbers an existing one
+        if (!wf.name) wf.name = "Imported teach";
+        if (!Array.isArray(wf.steps)) wf.steps = wf.steps || [];
+        await saveWorkflow(wf);
+        n++;
+      }
+      e.target.value = ""; // allow re-importing the same file
+      await renderWorkflows();
+      await renderWorkflowOptions();
+      if (!n) await mlAlert("No valid teach found in that file (expected a JSON teach with a 'steps' array or 'bindings').");
+    } catch (err) {
+      await mlAlert("Import failed: " + err.message);
+    }
+  });
 
   async function renderWorkflowOptions() {
     const list = await getWorkflows();
@@ -391,11 +453,12 @@
   $("#runFile").addEventListener("change", async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    setFileName("runFile", file.name);
     try {
       parsedRows = await readFile(file);
       renderPreview(parsedRows);
     } catch (err) {
-      $("#preview").innerHTML = `<p class="hint" style="color:#d64545">Parse error: ${err.message}</p>`;
+      $("#preview").innerHTML = `<p class="hint" style="color:#d64545">Parse error: ${escapeHtml(err.message)}</p>`;
       parsedRows = null;
     }
     updateRunEnabled();
@@ -486,7 +549,7 @@
   // ---- RUN: dry-run + batch -------------------------------------------------
   $("#dryRun").addEventListener("click", async () => {
     const wf = await currentWorkflow();
-    if (!wf) return alert("Pick a workflow first.");
+    if (!wf) { await mlAlert("Pick a workflow first."); return; }
     feed("Dry-run: resolving fields on the current screen…");
     const r = await sendCmd({ type: "ml:cmd:dry-run", workflow: wf });
     if (!r || !r.ok) return feed("Dry-run failed: " + (r && r.error), "error");
@@ -500,7 +563,7 @@
     if (!wf || !parsedRows) return;
     currentBatch = { total: parsedRows.length, done: 0, failed: 0 };
     runResults = {};
-    $("#resultRow").style.display = "none";
+    showResults(); // reveal Results/Failed CSV now — downloadable live, mid-run
     $("#runFeed").innerHTML = "";
     $("#progBar").style.width = "0%";
     $("#runCancel").disabled = false;
@@ -521,7 +584,7 @@
     if (!wf || !parsedRows || !parsedRows.length) return;
     currentBatch = { total: 1, done: 0, failed: 0 };
     runResults = {};
-    $("#resultRow").style.display = "none";
+    showResults();
     $("#runFeed").innerHTML = "";
     $("#progBar").style.width = "0%";
     $("#runCancel").disabled = false;
@@ -538,34 +601,34 @@
   $("#teachModal").addEventListener("click", async () => {
     const info = await sendCmd({ type: "ml:cmd:current-modal" });
     if (!info || !info.ok || !info.modal) {
-      alert("No modal detected on screen. Trigger the popup in Maximo first, leave it open, then click this.");
+      await mlAlert("No modal detected on screen. Trigger the popup in Maximo first, leave it open, then click this.");
       return;
     }
     const m = info.modal;
     const btns = m.buttons.length ? m.buttons.join(", ") : "(none found)";
-    const button = prompt(
+    const button = await mlPrompt(
       `Modal detected:\n\n"${m.text.slice(0, 240)}"\n\nButtons: ${btns}\n\nWhich button should MaxLoad press? (type it exactly)`,
       m.buttons[0] || "OK"
     );
     if (!button) return;
     const outcome = (
-      prompt("After pressing it, is this row FAILED or is it FINE to continue?\nType: fail  /  continue  /  abort", "fail") || ""
+      (await mlPrompt("After pressing it, is this row FAILED or is it FINE to continue?\nType: fail  /  continue  /  abort", "fail")) || ""
     ).toLowerCase().trim();
-    if (!["fail", "continue", "abort"].includes(outcome)) return alert("Cancelled — outcome must be fail, continue, or abort.");
+    if (!["fail", "continue", "abort"].includes(outcome)) { await mlAlert("Cancelled — outcome must be fail, continue, or abort."); return; }
     const scope = (
-      prompt(
+      (await mlPrompt(
         "Apply this rule to:\n\n• message  — only this exact popup text\n• buttons  — EVERY popup that has the same buttons (e.g. all error dialogs with just OK)\n\nType: message  /  buttons",
         "buttons"
-      ) || "buttons"
+      )) || "buttons"
     ).toLowerCase().trim();
     const r = await sendCmd({ type: "ml:cmd:teach-modal", button, outcome, scope: scope === "message" ? "message" : "buttons" });
     if (r && r.ok) {
-      alert(
+      await mlAlert(
         `Learned!${r.applied ? ` Pressed "${button}" now.` : ""}\n\nWhenever this modal appears, MaxLoad will press "${button}" and mark the row "${outcome}". Manage saved rules in Settings.`
       );
       loadModalRules();
     } else {
-      alert("Could not save: " + (r && r.error));
+      await mlAlert("Could not save: " + (r && r.error));
     }
   });
 
@@ -615,12 +678,12 @@
   }
   $("#dlResults").addEventListener("click", () => {
     const { rows, headers } = buildResultRows(false);
-    if (!rows.length) return alert("No results yet.");
+    if (!rows.length) { mlAlert("No results yet."); return; }
     download("maxload-results.csv", rowsToCsv(rows, headers));
   });
   $("#dlFailed").addEventListener("click", () => {
     const { rows, headers } = buildResultRows(true);
-    if (!rows.length) return alert("No failed rows 🎉");
+    if (!rows.length) { mlAlert("No failed rows 🎉"); return; }
     download("maxload-failed-rows.csv", rowsToCsv(rows, headers));
   });
 
@@ -647,7 +710,7 @@
       const pct = Math.round((done / currentBatch.total) * 100);
       $("#progBar").style.width = pct + "%";
       $("#progText").textContent = `${done}/${currentBatch.total} · ${currentBatch.done} ok · ${currentBatch.failed} failed${currentBatch.skipped ? " · " + currentBatch.skipped + " skipped" : ""}`;
-      feed(`Row ${ev.index + 1}: ${ev.status.toUpperCase()} — ${ev.message || ""} (${ev.ms}ms)`, ev.status === "failed" ? "warn" : "");
+      feed(`Row ${ev.index + 1}: ${ev.status.toUpperCase()} — ${escapeHtml(ev.message || "")} (${ev.ms}ms)`, ev.status === "failed" ? "error" : ev.status === "skipped" ? "warn" : "");
     } else if (ev.phase === "abort") {
       runResults[ev.index] = { status: "aborted", message: ev.message || "" };
       feed(`RUN ABORTED at row ${ev.index + 1}: ${ev.message}`, "error");
@@ -670,20 +733,68 @@
   }
 
   // ---- LOGS -----------------------------------------------------------------
+  let logsCache = [];
+
+  // Stored timestamps are UTC ISO (toISOString) — render them in the user's
+  // LOCAL time so the log clock matches the wall clock (fixes the "off by an
+  // hour or two" complaint).
+  function fmtLocalTime(ts) {
+    if (!ts) return "—";
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return String(ts).slice(0, 19);
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
   async function loadLogs() {
     const r = await chrome.runtime.sendMessage({ type: "ml:store:get-logs" });
-    const view = $("#logView");
-    view.innerHTML = "";
-    const logs = (r && r.logs) || [];
-    logs.slice(-500).forEach((e) => {
-      const line = el("div", "l " + (e.level || ""));
-      const data = e.data ? "  " + JSON.stringify(e.data) : "";
-      line.innerHTML = `<span class="t">${(e.ts || "").replace("T", " ").slice(0, 19)}</span> [${e.level}] ${escapeHtml(e.msg || "")}${escapeHtml(data)}`;
-      view.appendChild(line);
-    });
-    view.scrollTop = view.scrollHeight;
+    logsCache = Array.isArray(r && r.logs) ? r.logs : [];
+    renderLogs();
   }
+
+  function renderLogs() {
+    const view = $("#logView");
+    if (!view) return;
+    const level = $("#logLevel").value;
+    const q = $("#logSearch").value.trim().toLowerCase();
+    const sort = $("#logSort").value;
+    let rows = logsCache.map((e, i) => ({ e, i })); // carry original index for a stable sort
+    rows = rows.filter(({ e }) => {
+      const lvl = String(e.level || "log").toLowerCase();
+      if (level && lvl !== level) return false;
+      if (q) {
+        const hay = (String(e.msg || "") + " " + (e.data ? JSON.stringify(e.data) : "")).toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    rows.sort((a, b) => {
+      const ta = new Date(a.e.ts || 0).getTime() || a.i;
+      const tb = new Date(b.e.ts || 0).getTime() || b.i;
+      return sort === "asc" ? ta - tb : tb - ta;
+    });
+    const shown = rows.slice(0, 1000);
+    view.innerHTML = "";
+    for (const { e } of shown) {
+      const lvl = String(e.level || "log").toLowerCase();
+      const line = el("div", "l " + lvl);
+      const data = e.data ? "  " + JSON.stringify(e.data) : "";
+      line.innerHTML =
+        `<span class="t">${fmtLocalTime(e.ts)}</span>` +
+        `<span class="lvl">${escapeHtml(lvl)}</span>` +
+        `${escapeHtml(e.msg || "")}${escapeHtml(data)}`;
+      view.appendChild(line);
+    }
+    $("#logCount").textContent = logsCache.length
+      ? `${shown.length} shown of ${logsCache.length} · ${sort === "desc" ? "newest first" : "oldest first"}`
+      : "No log entries yet.";
+    view.scrollTop = sort === "asc" ? view.scrollHeight : 0;
+  }
+
   $("#logRefresh").addEventListener("click", loadLogs);
+  $("#logLevel").addEventListener("change", renderLogs);
+  $("#logSort").addEventListener("change", renderLogs);
+  $("#logSearch").addEventListener("input", renderLogs);
   $("#logClear").addEventListener("click", async () => {
     await chrome.runtime.sendMessage({ type: "ml:store:clear-logs" });
     loadLogs();
@@ -751,7 +862,7 @@
     setTimeout(() => (s.textContent = ""), 2000);
   });
   $("#cacheClear").addEventListener("click", async () => {
-    if (confirm("Clear the entire knowledge base cache?")) {
+    if (await mlConfirm("Clear the entire knowledge base cache?")) {
       await sendCmd({ type: "ml:cmd:clear-cache" });
       loadSettings();
     }
@@ -795,7 +906,7 @@
     download("maxload-modal-rules.json", JSON.stringify(o[MODAL_RULES_KEY] || {}, null, 2));
   });
   $("#modalRulesClear").addEventListener("click", async () => {
-    if (confirm("Delete ALL learned modal rules?")) {
+    if (await mlConfirm("Delete ALL learned modal rules?")) {
       await chrome.storage.local.set({ [MODAL_RULES_KEY]: {} });
       loadModalRules();
     }
@@ -1010,6 +1121,14 @@
   });
 
   // ---- helpers --------------------------------------------------------------
+  function setFileName(inputId, name) {
+    const input = document.getElementById(inputId);
+    const wrap = input && input.closest(".filepick");
+    if (!wrap) return;
+    const span = wrap.querySelector(".filepick-name");
+    if (span) span.textContent = name || "No file chosen yet";
+    wrap.classList.toggle("has-file", !!name);
+  }
   function download(name, text) {
     const blob = new Blob([text], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);

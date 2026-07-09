@@ -55,6 +55,15 @@
             break;
           }
 
+          case "ml:cmd:build-workflow": {
+            // Rebuild the workflow from the CURRENT (possibly post-stop-edited)
+            // recorder state, with a chosen name — lets the panel keep Stop and
+            // Save separate without re-stopping the recorder.
+            const wf = MaxLoad.recorder.buildWorkflow(msg.name);
+            sendResponse({ ok: true, workflow: wf });
+            break;
+          }
+
           case "ml:cmd:dry-run": {
             const results = await MaxLoad.exec.dryRunWorkflow(msg.workflow);
             sendResponse({ ok: true, results });
