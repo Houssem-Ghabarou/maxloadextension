@@ -123,9 +123,31 @@
     }
   });
 
+  // ---- Teach mode: single operation vs. update-or-create (upsert) ----
+  let awaitingNewBtn = false;
+  function updateTeachModeUi() {
+    const upsert = $("#recAction").value === "UPSERT";
+    $("#teachAddRow").style.display = upsert ? "flex" : "none";
+    $("#teachModeHint").innerHTML = upsert
+      ? "Teach the <b>update</b> (search → edit → Save). If a row isn't found, MaxLoad clicks the <b>Add</b> button (pointed at above, or auto-detected) and fills the same fields."
+      : "Just <b>demonstrate the operation once</b> — create <i>or</i> update, it's the same to MaxLoad. It replays exactly what you do, per row.";
+  }
+  $("#recAction").addEventListener("change", updateTeachModeUi);
+  updateTeachModeUi();
+
+  $("#teachAddBtn").addEventListener("click", async () => {
+    awaitingNewBtn = true;
+    $("#teachAddStatus").textContent = "Click the + / New button on the Maximo page… (Esc cancels)";
+    await sendToAllFrames({ type: "ml:bind:arm", role: "button:new" });
+  });
+  async function onNewButtonCaptured(binding) {
+    await sendCmd({ type: "ml:cmd:set-new-button", binding });
+    $("#teachAddStatus").textContent = "Add button learned ✓ " + (binding.text || binding.label || "New");
+  }
+
   $("#recStart").addEventListener("click", async () => {
     if ($("#recStart").disabled) return;
-    const action = $("#recAction").value;
+    const action = $("#recAction").value; // ANY = single teach, UPSERT = update-or-create
     const r = await sendCmd({ type: "ml:cmd:start-recording", action, columns: teachColumns });
     if (r && r.ok) {
       $("#recStart").disabled = true;
@@ -644,9 +666,9 @@
     );
     if (!button) return;
     const outcome = (
-      (await mlPrompt("After pressing it, is this row FAILED or is it FINE to continue?\nType: fail  /  continue  /  abort", "fail")) || ""
+      (await mlPrompt("What does this popup mean for the row?\n• fail — skip this row\n• continue — keep going\n• abort — stop the whole run\n• create — the record doesn't exist, so create it (update-or-create)\n\nType: fail / continue / abort / create", "fail")) || ""
     ).toLowerCase().trim();
-    if (!["fail", "continue", "abort"].includes(outcome)) { await mlAlert("Cancelled — outcome must be fail, continue, or abort."); return; }
+    if (!["fail", "continue", "abort", "create"].includes(outcome)) { await mlAlert("Cancelled — type fail, continue, abort, or create."); return; }
     const scope = (
       (await mlPrompt(
         "Apply this rule to:\n\n• message  — only this exact popup text\n• buttons  — EVERY popup that has the same buttons (e.g. all error dialogs with just OK)\n\nType: message  /  buttons",
@@ -786,6 +808,12 @@
       $("#runCancel").disabled = true;
       updateRunEnabled();
       focusErrors(); // an abort is always an error — surface it
+    } else if (ev.phase === "paused") {
+      feed(`⏸ Paused at row ${ev.index + 1}: an unknown popup is on screen. Click “🔧 Teach the modal on screen”, choose what it means, then Run again to continue.`, "warn");
+      $("#runCancel").disabled = true;
+      updateRunEnabled();
+      const card = $("#teachModalCard");
+      if (card) card.scrollIntoView({ block: "center", behavior: "smooth" });
     } else if (ev.phase === "complete") {
       const c = ev.summary.counts;
       feed(`Complete — ${c.done || 0} done, ${c.failed || 0} failed, ${c.skipped || 0} skipped.`, "");
@@ -905,6 +933,7 @@
     $("#setModel").value = s.model || "";
     $("#setEndpoint").value = s.endpoint || "";
     $("#setAiEnabled").checked = s.aiEnabled !== false;
+    $("#setManualModals").checked = !!s.manualModals;
     applyProviderUi(provider, s.model);
     const stat = await sendCmd({ type: "ml:cmd:cache-stats" });
     const tbody = $("#cacheStat").querySelector("tbody");
@@ -923,7 +952,8 @@
       apiKey: $("#setKey").value.trim(),
       model: $("#setModel").value.trim(), // empty => provider default in the SW
       endpoint: $("#setEndpoint").value.trim(),
-      aiEnabled: $("#setAiEnabled").checked
+      aiEnabled: $("#setAiEnabled").checked,
+      manualModals: $("#setManualModals").checked
     };
     await chrome.runtime.sendMessage({ type: "ml:store:save-settings", settings });
     const s = $("#setStatus");
@@ -1179,9 +1209,13 @@
     else if (msg.type === "ml:batch-result") {
       if (msg.result && msg.result.aborted) feed("Batch stopped (aborted).", "error");
     } else if (msg.type === "ml:bind:captured") {
-      onBindCaptured(msg.role, msg.binding);
+      if (awaitingNewBtn) { awaitingNewBtn = false; onNewButtonCaptured(msg.binding); }
+      else onBindCaptured(msg.role, msg.binding);
     } else if (msg.type === "ml:bind:cancelled" || msg.type === "ml:bind:broadcast-disarm") {
-      if (armRole) {
+      if (awaitingNewBtn && msg.type === "ml:bind:cancelled") {
+        awaitingNewBtn = false;
+        $("#teachAddStatus").textContent = "Cancelled — auto-detected if you skip it.";
+      } else if (armRole) {
         armRole = null;
         $("#bindArmHint").innerHTML = "Pick cancelled. Click a <b>Bind</b> button to try again.";
         disarmAll();

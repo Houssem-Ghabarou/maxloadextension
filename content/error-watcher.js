@@ -17,6 +17,10 @@
   const norm = MaxLoad.util.normLabel;
   const RULES_KEY = "ml:modalRules";
 
+  // TEACH MODE: when true, an UNTAUGHT popup pauses the run (left on screen) so you
+  // can teach it, instead of the default auto-handling. Set per run from Settings.
+  let manualTeach = false;
+
   const SESSION_RE = /\b(session|logged out|log ?in again|please log in|timed out|time ?out|expir|connexion|reconnect|déconnect|deconnect)\b/i;
 
   // ---- detection ------------------------------------------------------------
@@ -107,7 +111,7 @@
     const sig = fullSig(text, buttons);
     rules[sig] = {
       button: norm(rule.button),
-      outcome: ["continue", "fail", "abort"].includes(rule.outcome) ? rule.outcome : "fail",
+      outcome: ["continue", "fail", "abort", "create"].includes(rule.outcome) ? rule.outcome : "fail",
       scope: rule.scope === "buttons" ? "buttons" : "message",
       sample: (text || "").slice(0, 200),
       msgSig: msgSig(text),
@@ -178,6 +182,13 @@
     );
 
     if (!rule && SESSION_RE.test(m.text)) return { outcome: "abort", message: m.text };
+
+    // TEACH MODE: an unknown popup is NOT auto-handled — pause so you can teach it.
+    // (Taught popups still apply automatically; only the untaught ones wait for you.)
+    if (!rule && manualTeach) {
+      MaxLoad.log(`popup untaught + teach-mode → pausing: "${m.text.slice(0, 70)}"`);
+      return { outcome: "pause", message: m.text };
+    }
 
     let btn, outcome, taught = false;
     if (rule) {
@@ -324,7 +335,8 @@
     teachModal,
     teachCurrentModal,
     currentModalInfo,
-    modalSignature
+    modalSignature,
+    setManualTeach: (on) => { manualTeach = !!on; }
   };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", startWatching, { once: true });

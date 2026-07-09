@@ -30,7 +30,8 @@
     steps: [],
     screen: "",
     columns: [],
-    startedAt: 0
+    startedAt: 0,
+    newButton: null // taught "Add / New" button binding (upsert: create-if-not-found)
   };
 
   function isControl(el) {
@@ -278,11 +279,16 @@
   // ---- lifecycle -------------------------------------------------------------
   function start(action, columns) {
     state.recording = true;
-    state.action = action === "UPDATE" ? "UPDATE" : "CREATE";
+    // A teach is action-agnostic: the SAME recorded steps serve CREATE, UPDATE and
+    // UPSERT rows (per-row `_action` decides at run time). "ANY" tells the batch
+    // runner not to skip rows by action. Legacy CREATE/UPDATE still accepted.
+    const a = String(action || "ANY").toUpperCase();
+    state.action = ["CREATE", "UPDATE", "UPSERT", "ANY"].includes(a) ? a : "ANY";
     state.steps = [];
     state.columns = Array.isArray(columns) ? columns.filter((c) => c && c !== "_action") : [];
     state.screen = document.title || location.pathname;
     state.startedAt = MaxLoad.util.now();
+    state.newButton = null; // cleared each fresh teach; set via setNewButton (upsert)
     attach();
     MaxLoad.log("teach started: " + state.action);
     broadcast();
@@ -310,8 +316,17 @@
       tenant: MaxLoad.env.tenant,
       createdAt: new Date().toISOString(),
       steps: JSON.parse(JSON.stringify(state.steps)),
-      columns: [...new Set(mappedCols)]
+      columns: [...new Set(mappedCols)],
+      newButton: state.newButton || null // upsert: where to click when a row isn't found
     };
+  }
+
+  /** Store the taught "Add / New" button binding (from the point-and-click pick).
+   *  Used by the upsert branch to create a record the search didn't find. */
+  function setNewButton(binding) {
+    state.newButton = binding || null;
+    MaxLoad.log("teach: Add button " + (binding ? "learned (" + (binding.text || binding.label || "New") + ")" : "cleared"));
+    broadcast();
   }
 
   function broadcast() {
@@ -341,7 +356,8 @@
   function snapshot() {
     return {
       v: 1, recording: state.recording, action: state.action, columns: state.columns,
-      steps: state.steps, screen: state.screen, startedAt: state.startedAt, savedAt: Date.now()
+      steps: state.steps, screen: state.screen, startedAt: state.startedAt,
+      newButton: state.newButton, savedAt: Date.now()
     };
   }
   function persist() {
@@ -363,6 +379,7 @@
     state.steps = snap.steps;
     state.screen = snap.screen || state.screen;
     state.startedAt = snap.startedAt || MaxLoad.util.now();
+    state.newButton = snap.newButton || null;
     if (snap.recording) {
       state.recording = true;
       attach();                                                    // resume capturing NOW
@@ -399,12 +416,13 @@
   function status() {
     return {
       recording: state.recording, action: state.action,
-      columns: state.columns, steps: state.steps, stepCount: state.steps.length
+      columns: state.columns, steps: state.steps, stepCount: state.steps.length,
+      newButton: state.newButton
     };
   }
 
   MaxLoad.recorder = {
-    start, stop, buildWorkflow, discard, status,
+    start, stop, buildWorkflow, discard, status, setNewButton,
     setStepColumn, setStepOperator, setStepSearch, removeStep, moveStep,
     get state() { return state; }
   };

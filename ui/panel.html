@@ -73,11 +73,17 @@
 
       <h2>2 · Teach it once</h2>
       <label class="field">
-        <span>This teach</span>
+        <span>What should this teach do?</span>
         <select id="recAction">
-          <option value="CREATE">Enters data — create or update per row</option>
+          <option value="ANY">Just teach it — one operation (create or update)</option>
+          <option value="UPSERT">Update, or create it if not found (both)</option>
         </select>
       </label>
+      <div class="row" id="teachAddRow" style="display:none;align-items:center;gap:8px">
+        <button class="btn" id="teachAddBtn">➕ Point at the New / Add button</button>
+        <span class="chip" id="teachAddStatus" style="flex:1;text-align:left">optional — auto-detected if you skip it</span>
+      </div>
+      <p class="hint" id="teachModeHint">This teach replays <b>exactly what you demonstrate</b> — click <b>New</b> to create, or <b>search</b> a record to update it.</p>
       <div class="row">
         <button class="btn primary" id="recStart" disabled title="Load a data file first">● Start teaching</button>
         <button class="btn" id="recStop" disabled>■ Stop</button>
@@ -200,6 +206,8 @@
 
     <!-- SETTINGS -->
     <section class="tab" id="tab-settings">
+      <!-- AI settings hidden for now (not needed) -->
+      <div id="aiSettings" hidden>
       <h2>AI fallback provider</h2>
       <label class="field">
         <span>Provider</span>
@@ -224,6 +232,12 @@
       <label class="field row" style="gap:6px;align-items:center">
         <input type="checkbox" id="setAiEnabled" checked style="width:auto" />
         <span style="margin:0">Enable AI recovery when confidence &lt; threshold</span>
+      </label>
+      </div>
+      <h2>Popups</h2>
+      <label class="field row" style="gap:6px;align-items:center">
+        <input type="checkbox" id="setManualModals" style="width:auto" />
+        <span style="margin:0">Teach popups myself — <b>pause</b> the run on an unknown popup instead of auto-handling it</span>
       </label>
       <div class="row">
         <button class="btn primary" id="setSave">Save settings</button>

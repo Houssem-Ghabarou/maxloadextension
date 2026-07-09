@@ -75,6 +75,12 @@
             sendResponse({ ok: true });
             break;
 
+          case "ml:cmd:set-new-button":
+            // Store the taught "Add / New" button (upsert: click it when a row isn't found).
+            MaxLoad.recorder.setNewButton(msg.binding);
+            sendResponse({ ok: true });
+            break;
+
           case "ml:cmd:dry-run": {
             const results = await MaxLoad.exec.dryRunWorkflow(msg.workflow);
             sendResponse({ ok: true, results });
@@ -84,13 +90,18 @@
           case "ml:cmd:run-batch": {
             // fire-and-progress: respond immediately, stream via ml:progress
             MaxLoad.exec
-              .runBatch({ rows: msg.rows, workflow: msg.workflow, fileName: msg.fileName })
+              .runBatch({ rows: msg.rows, workflow: msg.workflow, fileName: msg.fileName, createIfNotFound: !!msg.createIfNotFound })
               .then((res) =>
                 chrome.runtime.sendMessage({ type: "ml:batch-result", result: res })
               );
             sendResponse({ ok: true, started: true });
             break;
           }
+
+          case "ml:cmd:check-record":
+            // Validate the UPSERT detector on the current screen (for a test button).
+            sendResponse({ ok: true, decision: MaxLoad.exec.classifyLocate() });
+            break;
 
           case "ml:cmd:cancel":
             MaxLoad.exec.cancel();

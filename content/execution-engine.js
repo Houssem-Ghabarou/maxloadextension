@@ -188,6 +188,102 @@
     );
   }
 
+  /** The New/Insert toolbar control — by Maximo's language-independent internal
+   *  event id (toolactions_INSERT) first, then localized button text. Mirror of
+   *  findSaveControl; used by UPSERT to create a record the search didn't find. */
+  function findNewControl() {
+    for (const doc of MaxLoad.dom.collectDocuments(document)) {
+      let el = null;
+      try { el = doc.querySelector('a[id^="toolactions_INSERT"], [id^="toolactions_INSERT"], img[id^="toolactions_INSERT"]'); } catch (_) {}
+      if (el && MaxLoad.util.isVisible(el)) return el;
+    }
+    return (
+      MaxLoad.dom.findButton("New") ||
+      MaxLoad.dom.findButton("Nouveau") ||
+      MaxLoad.dom.findButton("Nouvel enregistrement") ||
+      MaxLoad.dom.findButton("Insert") ||
+      MaxLoad.dom.findButton("Insérer") ||
+      null
+    );
+  }
+
+  /** Where UPSERT clicks to create a not-found record, most-reliable first:
+   *   1. the Add button you POINTED AT during the teach (workflow.newButton)
+   *   2. a New/Insert click captured in the recorded steps
+   *   3. auto-detection (toolactions_INSERT / localized text)
+   *  "Show it once, or let it find it itself." */
+  function resolveTaughtNew(workflow) {
+    if (workflow && workflow.newButton && MaxLoad.binder) {
+      const el = MaxLoad.binder.locateButton(workflow.newButton);
+      if (el) return el;
+    }
+    const ns = (workflow && workflow.steps || []).find((s) => isNewStep(s));
+    if (ns && ns.binding && MaxLoad.binder) {
+      const el = MaxLoad.binder.locateButton(ns.binding);
+      if (el) return el;
+    }
+    return findNewControl();
+  }
+
+  /**
+   * Create the current row's record — invoked when the taught update hits Maximo's
+   * "record not found" popup (which you teach once as outcome "create"). Clicks the
+   * taught/auto-detected New button, then replays the SAME field fills (minus the
+   * key/search) and Save, by reusing runRowSeq on a create-only sub-sequence — so it
+   * keeps all the settle / never-blank / verify safety, with no step-skipping guesses.
+   */
+  async function runCreateForRow(workflow, row, rowNum) {
+    const fills = (workflow.steps || []).filter(
+      (s) => ((s.type === "set-field" || s.type === "select") && s.column !== "__key__") || isSaveStep(s)
+    );
+    const newStep = {
+      id: "syn-new", type: "click", role: "button:new",
+      text: (workflow.newButton && workflow.newButton.text) || "New",
+      binding: workflow.newButton || { role: "button:new", text: "New" }
+    };
+    const createWf = { ...workflow, action: "CREATE", steps: [newStep, ...fills] };
+    MaxLoad.log(`row ${rowNum}: record not found → creating (New + ${fills.length} steps)`);
+    MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: not found → creating`, "click");
+    return await runRowSeq(createWf, row, rowNum);
+  }
+
+  /** Best-effort total from a Maximo "1 - 10 of 137" / "0 of 0" / "1 à 10 sur 137"
+   *  paging indicator. Returns the total, or -1 when no indicator is present. */
+  function countResultRows() {
+    for (const doc of MaxLoad.dom.collectDocuments(document)) {
+      let txt = "";
+      try { txt = (doc.body && doc.body.innerText || "").slice(0, 20000); } catch (_) { continue; }
+      const m = txt.match(/\b\d[\d,\.\s]*(?:[-–à]\s*\d[\d,\.\s]*\s*)?(?:of|de|sur)\s*(\d[\d,\.]*)/i);
+      if (m) { const total = parseInt(String(m[1]).replace(/[^\d]/g, ""), 10); if (!isNaN(total)) return total; }
+    }
+    return -1;
+  }
+
+  /**
+   * After a search submits, decide whether the record exists — the heart of
+   * UPSERT. Layered signals, conservative by design (when unsure, DON'T create,
+   * so we never make a duplicate):
+   *   1. Maximo "no rows" message (BMXAA codes + EN/FR phrasings) -> not-found
+   *   2. a record form is open with a key value -> found
+   *   3. list paging count: 0 -> not-found, 1 -> found, >1 -> ambiguous
+   * Returns { result: 'found'|'not-found'|'ambiguous'|'unknown', reason }.
+   */
+  function classifyLocate() {
+    const joined = (MaxLoad.errorWatcher.captureInlineMessages() || []).join("  ");
+    if (/bmxaa(4211|4141|4142)\b|no rows to display|no records? (found|to display|exist)|aucun enregistrement|aucune ligne|records?\s*found\W*0\b/i.test(joined)) {
+      return { result: "not-found", reason: "message: " + (joined.slice(0, 90) || "no rows") };
+    }
+    const st = MaxLoad.dom.describeState();
+    if (st.view === "record" && st.recordId != null && String(st.recordId).trim() !== "") {
+      return { result: "found", reason: "record open (" + st.recordId + ")" };
+    }
+    const count = countResultRows();
+    if (count === 0) return { result: "not-found", reason: "0 matching rows" };
+    if (count === 1) return { result: "found", reason: "1 matching row" };
+    if (count > 1) return { result: "ambiguous", reason: count + " matching rows" };
+    return { result: st.view === "record" ? "found" : "unknown", reason: "no clear signal (view=" + st.view + ")" };
+  }
+
   // ---- guard: refuse to act while a blocking modal is present ---------------
   async function guardClear(rowNum, screen) {
     const modal = MaxLoad.errorWatcher.currentBlocking();
@@ -708,9 +804,15 @@
    * with each field filled from its mapped Excel column. Popups are resolved by
    * the modal handler (continue / skip-row / abort).
    */
-  async function runRowSeq(workflow, row, rowNum) {
+  async function runRowSeq(workflow, row, rowNum, opts) {
     const meta = { app: workflow.name, screen: workflow.screen };
     const action = String(row._action || workflow.action || "CREATE").toUpperCase();
+    // UPSERT (update-or-create): the trigger is Maximo's OWN "record not found" popup,
+    // which the user teaches once as outcome "create" (see error-watcher). When any
+    // errorWatcher.handle() returns outcome "create", we build the record via
+    // runCreateForRow (New + the same fills). Disabled while we're already replaying a
+    // create sub-sequence (action CREATE), so it can never recurse.
+    const allowCreate = action !== "CREATE";
     const steps = workflow.steps || [];
     const warnings = [];
     let saved = false;
@@ -745,6 +847,8 @@
       let h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
       if (h.outcome === "abort") return { status: "abort", message: h.message };
       if (h.outcome === "fail") return { status: "failed", message: h.message };
+        if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
+        if (h.outcome === "pause") return { status: "paused", message: h.message };
 
       if (step.type === "click" || isSaveStep(step)) {
         // skip Maximo grid noise (row-select "tempselect", list toggles) that
@@ -766,6 +870,12 @@
         // its miss abort the row; the select step re-opens the menu itself.
         const opensDropdown = steps[idx + 1] && steps[idx + 1].type === "select";
         const rb = await resolveStepButton(step, meta);
+        if (!rb.el && isNewStep(step)) {
+          // a New/Add click (incl. the synthetic one from runCreateForRow) falls back
+          // to the taught Add button, a recorded New step, or auto-detection.
+          const nel = resolveTaughtNew(workflow);
+          if (nel) { rb.el = nel; rb.via = "auto-new"; }
+        }
         if (!rb.el) {
           if (opensDropdown) {
             reportStep(rowNum, idx, "click", (step.text || "dropdown") + " (opener — menu handled next)", "skipped");
@@ -811,6 +921,8 @@
           h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
           if (h.outcome === "abort") return { status: "abort", message: h.message };
           if (h.outcome === "fail") return { status: "failed", message: h.message };
+        if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
+        if (h.outcome === "pause") return { status: "paused", message: h.message };
         }
 
         if (save) saved = true;
@@ -847,6 +959,8 @@
         h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
         if (h.outcome === "abort") return { status: "abort", message: h.message };
         if (h.outcome === "fail") return { status: "failed", message: h.message };
+        if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
+        if (h.outcome === "pause") return { status: "paused", message: h.message };
       } else if (step.type === "key") {
         // press a recorded key (Enter to submit a search, etc.) on its field
         let kel = null;
@@ -865,6 +979,8 @@
         h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
         if (h.outcome === "abort") return { status: "abort", message: h.message };
         if (h.outcome === "fail") return { status: "failed", message: h.message };
+        if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
+        if (h.outcome === "pause") return { status: "paused", message: h.message };
       } else if (step.type === "select") {
         // Maximo status/synonym dropdown: open the menu (reusing the opener the
         // previous click opened, or re-opening via its stable anchors) and click
@@ -884,6 +1000,8 @@
         h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
         if (h.outcome === "abort") return { status: "abort", message: h.message };
         if (h.outcome === "fail") return { status: "failed", message: h.message };
+        if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
+        if (h.outcome === "pause") return { status: "paused", message: h.message };
       }
     }
 
@@ -942,6 +1060,12 @@
   async function runBatch(opts) {
     cancelFlag = false;
     running = true;
+    // Teach mode (Settings): pause on UNKNOWN popups so the user can teach them,
+    // instead of the default auto-handling. Read once per run.
+    try {
+      const s = (await chrome.storage.local.get("ml:settings"))["ml:settings"] || {};
+      MaxLoad.errorWatcher.setManualTeach(!!s.manualModals);
+    } catch (_) { MaxLoad.errorWatcher.setManualTeach(false); }
     const { workflow, fileName } = opts;
     const rows = opts.rows || [];
     const sequence = workflow.mode === "sequence";
@@ -956,9 +1080,13 @@
     if (!total) return { ok: false, errors: ["No data rows found."] };
 
     const runId = MaxLoad.resume.makeRunId(workflow.id, fileName, total);
+    // Resume is OFF: every run (and "Watch row 1") starts from the FIRST row. We clear
+    // any prior state for this file so a re-upload never skips rows it "already did"
+    // (that stale-skip is also what made "Watch row 1" sometimes do nothing).
+    await MaxLoad.resume.clear(runId);
     const run = await MaxLoad.resume.begin(runId, { workflow: workflow.name, fileName, total });
 
-    let start = MaxLoad.resume.nextIndex(run, total);
+    let start = 0;
     report(opts, { phase: "start", runId, total, resumingFrom: start });
 
     for (let i = start; i < total; i++) {
@@ -967,9 +1095,12 @@
         break;
       }
 
-      // for sequence workflows tied to one action, skip rows of the other action
-      if (sequence && workflow.action && workflow.action !== "ANY" && rows[i]._action) {
-        if (String(rows[i]._action).toUpperCase() !== workflow.action) {
+      // for sequence workflows tied to one action, skip rows of the other action —
+      // but never skip an UPSERT row or when "create if not found" is on (those are
+      // meant to run against any taught flow), and never for action-agnostic teaches.
+      if (sequence && workflow.action && workflow.action !== "ANY" && workflow.action !== "UPSERT" && rows[i]._action && !opts.createIfNotFound) {
+        const ra = String(rows[i]._action).toUpperCase();
+        if (ra !== workflow.action && ra !== "UPSERT") {
           await MaxLoad.resume.setRow(runId, i, "skipped", "row _action != workflow action");
           report(opts, { phase: "row-done", index: i, status: "skipped", message: `_action ${rows[i]._action} ≠ ${workflow.action}`, ms: 0 });
           continue;
@@ -983,7 +1114,7 @@
       let result;
       try {
         result = sequence
-          ? await runRowSeq(workflow, rows[i], i + 1)
+          ? await runRowSeq(workflow, rows[i], i + 1, opts)
           : await runRow(plans[i], workflow, i + 1);
       } catch (e) {
         result = { status: "failed", message: "exception: " + (e && e.message ? e.message : String(e)) };
@@ -997,6 +1128,16 @@
         running = false;
         await MaxLoad.input.detach();
         return { ok: false, aborted: true, runId, message: result.message, atRow: i };
+      }
+
+      if (result.status === "paused") {
+        // Teach mode: an unknown popup is on screen. Leave the row PENDING so a
+        // re-run resumes here, and stop — the user teaches the popup, then runs again.
+        await MaxLoad.resume.setRow(runId, i, "pending", result.message);
+        report(opts, { phase: "paused", index: i, message: result.message, ms: dt });
+        running = false;
+        await MaxLoad.input.detach();
+        return { ok: false, paused: true, runId, message: result.message, atRow: i };
       }
 
       const status =
@@ -1120,6 +1261,7 @@
     setField,
     clickByText,
     locateRecord,
+    classifyLocate,
     setNativeValue,
     fireInputEvents,
     cancel,

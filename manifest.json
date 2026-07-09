@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "MaxLoad — Maximo Excel Automation",
   "version": "0.1.0",
-  "description": "Teach MaxLoad a Maximo business process once (Create & Update), then execute it reliably from Excel — deterministic matching with an AI fallback, entirely in the browser.",
+  "description": "Teach MaxLoad a Maximo business process once (Create & Update), then execute it reliably from Excel entirely in the browser.",
   "permissions": [
     "storage",
     "scripting",
