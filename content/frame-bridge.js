@@ -64,6 +64,17 @@
             break;
           }
 
+          case "ml:cmd:recorder-status":
+            // So the panel can recover its OWN UI (steps + "still teaching?") after
+            // a reload — the recorder may have auto-resumed a session from storage.
+            sendResponse({ ok: true, status: MaxLoad.recorder.status() });
+            break;
+
+          case "ml:cmd:discard-recording":
+            MaxLoad.recorder.discard();
+            sendResponse({ ok: true });
+            break;
+
           case "ml:cmd:dry-run": {
             const results = await MaxLoad.exec.dryRunWorkflow(msg.workflow);
             sendResponse({ ok: true, results });

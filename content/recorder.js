@@ -20,6 +20,8 @@
  */
 (function () {
   "use strict";
+  if (window.__MAXLOAD_RECORDER__) return; // one recorder per page context (guards double-injection)
+  window.__MAXLOAD_RECORDER__ = true;
   const MaxLoad = window.MaxLoad;
 
   const state = {
@@ -314,6 +316,7 @@
 
   function broadcast() {
     if (!MaxLoad.env.isTop) return;
+    persist(); // survive a page refresh / navigation mid-teach (see below)
     chrome.runtime?.sendMessage({
       type: "ml:recorder-state",
       recording: state.recording,
@@ -324,9 +327,87 @@
     });
   }
 
+  // ---- durable session: survive a page refresh / navigation mid-teach -------
+  // The recorded steps + "am I recording?" live only in this page-context memory,
+  // which a Maximo navigation (Save / New / search / re-login) destroys — silently
+  // ending the teach and losing every click. We mirror the session to storage on
+  // every change and, on the NEXT content-script load, restore it and RE-ATTACH the
+  // listeners so capture continues without a gap. Works in the extension
+  // (chrome.storage) and the desktop app (the same chrome.storage shim → file store).
+  const SESSION_KEY = "ml:recSession";
+  const LS_KEY = "__maxload_recSession"; // synchronous mirror — catches the click that triggers the reload
+  const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+
+  function snapshot() {
+    return {
+      v: 1, recording: state.recording, action: state.action, columns: state.columns,
+      steps: state.steps, screen: state.screen, startedAt: state.startedAt, savedAt: Date.now()
+    };
+  }
+  function persist() {
+    const snap = snapshot();
+    // localStorage is SYNCHRONOUS, so it flushes even when the click's very next act
+    // is to navigate away (chrome.storage.set is async and could be lost in that race).
+    try { localStorage.setItem(LS_KEY, JSON.stringify(snap)); } catch (_) {}
+    try { chrome.storage && chrome.storage.local.set({ [SESSION_KEY]: snap }); } catch (_) {}
+  }
+  function clearSession() {
+    try { localStorage.removeItem(LS_KEY); } catch (_) {}
+    try { chrome.storage && chrome.storage.local.remove(SESSION_KEY); } catch (_) {}
+  }
+  function applySnapshot(snap) {
+    if (!snap || !Array.isArray(snap.steps)) return false;
+    if (Date.now() - (snap.savedAt || 0) > SESSION_TTL_MS) return false; // ignore ancient sessions
+    state.action = snap.action || "CREATE";
+    state.columns = Array.isArray(snap.columns) ? snap.columns : [];
+    state.steps = snap.steps;
+    state.screen = snap.screen || state.screen;
+    state.startedAt = snap.startedAt || MaxLoad.util.now();
+    if (snap.recording) {
+      state.recording = true;
+      attach();                                                    // resume capturing NOW
+      setTimeout(() => { if (state.recording) attach(); }, 1500);  // re-attach to late-built iframes
+      MaxLoad.log("teach: resumed after reload — " + state.steps.length + " steps kept");
+    } else {
+      MaxLoad.log("teach: recovered " + state.steps.length + " stopped-but-unsaved steps");
+    }
+    broadcast();
+    return true;
+  }
+  function restoreSession() {
+    if (!MaxLoad.env.isTop) return;
+    let applied = false;
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) applied = applySnapshot(JSON.parse(raw)); // instant — no gap in listening
+    } catch (_) {}
+    // chrome.storage is authoritative (survives cross-origin nav where localStorage can't).
+    try {
+      const p = chrome.storage && chrome.storage.local.get(SESSION_KEY);
+      if (p && p.then) p.then((o) => { const s = o && o[SESSION_KEY]; if (s && !applied) applySnapshot(s); }).catch(() => {});
+    } catch (_) {}
+  }
+  /** Forget the in-progress session entirely (fresh slate). */
+  function discard() {
+    state.recording = false;
+    detach();
+    state.steps = [];
+    clearSession();
+    broadcast();
+  }
+  /** Current recorder state — lets the panel recover its UI after ITS own reload. */
+  function status() {
+    return {
+      recording: state.recording, action: state.action,
+      columns: state.columns, steps: state.steps, stepCount: state.steps.length
+    };
+  }
+
   MaxLoad.recorder = {
-    start, stop, buildWorkflow,
+    start, stop, buildWorkflow, discard, status,
     setStepColumn, setStepOperator, setStepSearch, removeStep, moveStep,
     get state() { return state; }
   };
+
+  restoreSession(); // auto-recover a teach interrupted by a refresh/navigation
 })();

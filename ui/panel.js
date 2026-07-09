@@ -184,6 +184,38 @@
     if (ok) setTimeout(() => { s.textContent = ""; s.className = "chip"; }, 2500);
   }
 
+  // Reflect the recorder's live state in the Teach buttons. Driven by broadcasts
+  // AND on panel load — so if a page reload auto-resumed a teach, the panel shows
+  // "teaching…" with Stop live again instead of a stale "idle".
+  function syncRecUi(recording, nSteps) {
+    const chip = $("#recState");
+    if (recording) {
+      $("#recStart").disabled = true;
+      $("#recStop").disabled = false;
+      $("#recSave").disabled = true;
+      chip.textContent = "● teaching…";
+      chip.className = "chip rec";
+    } else {
+      $("#recStop").disabled = true;
+      if (nSteps) $("#recSave").disabled = false;
+      $("#recStart").disabled = !parsedRows; // a NEW teach still needs a file for columns
+      if (chip.className.indexOf("rec") >= 0) { chip.textContent = "stopped"; chip.className = "chip"; }
+    }
+  }
+
+  // On panel load, ask the content script whether a teach is in progress (it may
+  // have auto-resumed after a Maximo reload) and restore the step list + buttons.
+  async function restoreRecorderUi() {
+    const r = await sendCmd({ type: "ml:cmd:recorder-status" });
+    const st = r && r.ok && r.status;
+    if (!st || !st.steps || !st.steps.length) return;
+    renderRecSteps(st.steps, st.columns);
+    syncRecUi(st.recording, st.steps.length);
+    if (!st.recording) {
+      $("#recSaveHint").innerHTML = `Recovered <b>${st.steps.length}</b> recorded steps after a reload. Name it and click <b>Save teach</b>.`;
+    }
+  }
+
   function colMenu(step) {
     const sel = document.createElement("select");
     sel.style.maxWidth = "160px";
@@ -637,12 +669,48 @@
     return (await getWorkflows()).find((w) => w.id === id) || null;
   }
 
+  let runFeedSeq = 0;
   function feed(text, level) {
     const line = el("li", "l " + (level || ""));
+    line.dataset.seq = String(runFeedSeq++); // chronological key, so sort order is reversible
     line.innerHTML = `<span class="t">${new Date().toLocaleTimeString()}</span>  ${text}`;
-    $("#runFeed").appendChild(line);
-    $("#runFeed").scrollTop = $("#runFeed").scrollHeight;
+    const feedEl = $("#runFeed");
+    const desc = $("#runLogSort").value === "desc";
+    if (desc) feedEl.insertBefore(line, feedEl.firstChild); // newest first → prepend
+    else feedEl.appendChild(line);
+    if (!runLineMatches(line)) line.style.display = "none"; // honor the active filter for new lines too
+    feedEl.scrollTop = desc ? 0 : feedEl.scrollHeight;
   }
+  // Live filter for the run log (mirrors the Logs tab, but on the streaming feed).
+  function runLineMatches(li) {
+    const level = $("#runLogLevel").value;
+    const q = $("#runLogSearch").value.trim().toLowerCase();
+    if (level) {
+      const lvl = li.classList.contains("error") ? "error" : li.classList.contains("warn") ? "warn" : "info";
+      if (lvl !== level) return false;
+    }
+    if (q && !li.textContent.toLowerCase().includes(q)) return false;
+    return true;
+  }
+  function applyRunFilter() {
+    $$("#runFeed li").forEach((li) => { li.style.display = runLineMatches(li) ? "" : "none"; });
+  }
+  function applyRunSort() {
+    const feedEl = $("#runFeed");
+    const desc = $("#runLogSort").value === "desc";
+    const lis = [...feedEl.children].sort((a, b) => (Number(a.dataset.seq) || 0) - (Number(b.dataset.seq) || 0));
+    if (desc) lis.reverse();
+    lis.forEach((li) => feedEl.appendChild(li)); // re-append in the chosen order
+    feedEl.scrollTop = desc ? 0 : feedEl.scrollHeight;
+  }
+  // When a run ends with failures, jump straight to the errors so they're not buried.
+  function focusErrors() {
+    $("#runLogLevel").value = "error";
+    applyRunFilter();
+  }
+  $("#runLogLevel").addEventListener("change", applyRunFilter);
+  $("#runLogSearch").addEventListener("input", applyRunFilter);
+  $("#runLogSort").addEventListener("change", applyRunSort);
 
   // ---- results export -------------------------------------------------------
   function csvEscape(v) {
@@ -717,6 +785,7 @@
       showResults();
       $("#runCancel").disabled = true;
       updateRunEnabled();
+      focusErrors(); // an abort is always an error — surface it
     } else if (ev.phase === "complete") {
       const c = ev.summary.counts;
       feed(`Complete — ${c.done || 0} done, ${c.failed || 0} failed, ${c.skipped || 0} skipped.`, "");
@@ -724,6 +793,7 @@
       updateRunEnabled();
       refreshState();
       showResults();
+      if ((c.failed || 0) > 0) focusErrors(); // finished with failures → land on the errors
     } else if (ev.phase === "cancelled") {
       feed("Run cancelled by user.", "warn");
       $("#runCancel").disabled = true;
@@ -1104,7 +1174,7 @@
   // ---- shared inbound messages ----------------------------------------------
   chrome.runtime.onMessage.addListener((msg) => {
     if (!msg || !msg.type) return;
-    if (msg.type === "ml:recorder-state") renderRecSteps(msg.steps, msg.columns);
+    if (msg.type === "ml:recorder-state") { renderRecSteps(msg.steps, msg.columns); syncRecUi(msg.recording, (msg.steps || []).length); }
     else if (msg.type === "ml:progress") onProgress(msg.ev);
     else if (msg.type === "ml:batch-result") {
       if (msg.result && msg.result.aborted) feed("Batch stopped (aborted).", "error");
@@ -1148,6 +1218,7 @@
     await ping();
     await renderWorkflowOptions();
     renderRecSteps([]); // Teach (record) is the default tab
+    await restoreRecorderUi(); // recover an in-progress teach if the page reloaded
     setInterval(ping, 5000);
   })();
 })();
