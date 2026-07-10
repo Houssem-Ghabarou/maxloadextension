@@ -20,6 +20,8 @@
   // TEACH MODE: when true, an UNTAUGHT popup pauses the run (left on screen) so you
   // can teach it, instead of the default auto-handling. Set per run from Settings.
   let manualTeach = false;
+  // The teach currently running — so per-teach modal rules apply only to it.
+  let currentWorkflowId = null;
 
   const SESSION_RE = /\b(session|logged out|log ?in again|please log in|timed out|time ?out|expir|connexion|reconnect|déconnect|deconnect)\b/i;
 
@@ -97,28 +99,47 @@
       return {};
     }
   }
+  // A rule may be GLOBAL (workflowId null → applies in any teach) or PER-TEACH
+  // (workflowId set → applies only while that teach runs). Global keeps the old key
+  // format; per-teach gets a distinct key so both can coexist for the same popup.
+  function ruleKey(workflowId, text, buttons) {
+    const base = fullSig(text, buttons);
+    return workflowId ? "wf:" + workflowId + " :: " + base : base;
+  }
   async function lookup(text, buttons) {
     const rules = await getRules();
-    if (rules[fullSig(text, buttons)]) return rules[fullSig(text, buttons)];
-    const ms = msgSig(text);
-    for (const k in rules) if (rules[k] && rules[k].msgSig === ms) return rules[k];
-    const bs = btnSig(buttons);
-    for (const k in rules) if (rules[k] && rules[k].scope === "buttons" && rules[k].btnSig === bs) return rules[k];
-    return null;
+    const ms = msgSig(text), bs = btnSig(buttons);
+    const applies = (r) => !r.workflowId || r.workflowId === currentWorkflowId;
+    const matches = (r) => (r.scope === "buttons" ? r.btnSig === bs : r.msgSig === ms);
+    const cands = Object.keys(rules).map((k) => rules[k]).filter((r) => r && applies(r) && matches(r));
+    if (!cands.length) return null;
+    // Prefer a PER-TEACH rule over a global one; and an exact message match over a
+    // broad "same buttons" match.
+    cands.sort((a, b) =>
+      ((a.workflowId ? 0 : 1) - (b.workflowId ? 0 : 1)) ||
+      ((a.scope === "buttons" ? 1 : 0) - (b.scope === "buttons" ? 1 : 0))
+    );
+    return cands[0];
   }
   async function teachModal(text, buttons, rule) {
     const rules = await getRules();
-    const sig = fullSig(text, buttons);
-    rules[sig] = {
+    // scope: "teach" = this workflow only; "buttons" = any popup with the same buttons
+    // (global); "message" = this exact message (global).
+    const perTeach = rule.scope === "teach";
+    const matchScope = rule.scope === "buttons" ? "buttons" : "message";
+    const workflowId = perTeach ? (rule.workflowId || null) : null;
+    const key = ruleKey(workflowId, text, buttons);
+    rules[key] = {
       button: norm(rule.button),
       outcome: ["continue", "fail", "abort", "create"].includes(rule.outcome) ? rule.outcome : "fail",
-      scope: rule.scope === "buttons" ? "buttons" : "message",
+      scope: matchScope,
+      workflowId,
       sample: (text || "").slice(0, 200),
       msgSig: msgSig(text),
       btnSig: btnSig(buttons)
     };
     await chrome.storage.local.set({ [RULES_KEY]: rules });
-    MaxLoad.log(`modal rule learned (${rules[sig].scope}): press '${rules[sig].button}' -> ${rules[sig].outcome}`);
+    MaxLoad.log(`modal rule learned (${matchScope}, ${workflowId ? "this teach" : "global"}): press '${rules[key].button}' -> ${rules[key].outcome}`);
     return rules;
   }
 
@@ -336,7 +357,8 @@
     teachCurrentModal,
     currentModalInfo,
     modalSignature,
-    setManualTeach: (on) => { manualTeach = !!on; }
+    setManualTeach: (on) => { manualTeach = !!on; },
+    setWorkflowContext: (id) => { currentWorkflowId = id || null; }
   };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", startWatching, { once: true });

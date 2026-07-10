@@ -300,7 +300,10 @@
   }
 
   function renderRecSteps(steps, columns) {
-    if (columns) teachColumns = columns;
+    // Only adopt columns that actually exist — an EMPTY array is truthy in JS, so a
+    // recorder broadcast with columns:[] (e.g. after a Maximo page reload) must NOT
+    // wipe the columns just loaded from the uploaded file.
+    if (columns && columns.length) teachColumns = columns;
     const ul = $("#recSteps");
     ul.innerHTML = "";
     if (!steps || !steps.length) {
@@ -669,13 +672,16 @@
       (await mlPrompt("What does this popup mean for the row?\n• fail — skip this row\n• continue — keep going\n• abort — stop the whole run\n• create — the record doesn't exist, so create it (update-or-create)\n\nType: fail / continue / abort / create", "fail")) || ""
     ).toLowerCase().trim();
     if (!["fail", "continue", "abort", "create"].includes(outcome)) { await mlAlert("Cancelled — type fail, continue, abort, or create."); return; }
+    const defScope = outcome === "create" ? "teach" : "message"; // create is mutating → default to this teach only
     const scope = (
       (await mlPrompt(
-        "Apply this rule to:\n\n• message  — only this exact popup text\n• buttons  — EVERY popup that has the same buttons (e.g. all error dialogs with just OK)\n\nType: message  /  buttons",
-        "buttons"
-      )) || "buttons"
+        "Where should this rule apply?\n\n• teach — ONLY this teach (recommended for create)\n• message — this exact popup, in ANY teach\n• buttons — any popup with the same buttons, in any teach\n\nType: teach / message / buttons",
+        defScope
+      )) || defScope
     ).toLowerCase().trim();
-    const r = await sendCmd({ type: "ml:cmd:teach-modal", button, outcome, scope: scope === "message" ? "message" : "buttons" });
+    const validScope = ["teach", "message", "buttons"].includes(scope) ? scope : defScope;
+    const workflowId = $("#runWorkflow").value; // the teach this popup belongs to
+    const r = await sendCmd({ type: "ml:cmd:teach-modal", button, outcome, scope: validScope, workflowId });
     if (r && r.ok) {
       await mlAlert(
         `Learned!${r.applied ? ` Pressed "${button}" now.` : ""}\n\nWhenever this modal appears, MaxLoad will press "${button}" and mark the row "${outcome}". Manage saved rules in Settings.`
@@ -779,7 +785,7 @@
 
   function onProgress(ev) {
     if (ev.phase === "start") {
-      feed(`Run ${ev.runId.slice(0, 24)}… resuming from row ${ev.resumingFrom + 1} of ${ev.total}.`);
+      feed(`Run started — ${ev.total} row(s), from row 1.`);
     } else if (ev.phase === "row-start") {
       feed(`Row ${ev.index + 1} [${ev.action}] …`);
     } else if (ev.phase === "step") {
@@ -976,17 +982,41 @@
     const o = await chrome.storage.local.get(MODAL_RULES_KEY);
     const rules = o[MODAL_RULES_KEY] || {};
     const keys = Object.keys(rules);
+
+    // Resolve each rule's teach (workflowId → name) so we can label + filter by it.
+    const wfName = {};
+    (await getWorkflows()).forEach((w) => { wfName[w.id] = w.name || w.id; });
+    const teachLabel = (id) => (id ? (wfName[id] || "(deleted teach)") : null);
+
+    // Rebuild the filter dropdown: All / Global / each teach that has rules.
+    const filter = $("#modalRulesFilter");
+    const prev = filter.value;
+    const teachIds = [...new Set(keys.map((k) => rules[k] && rules[k].workflowId).filter(Boolean))];
+    filter.innerHTML = "";
+    const addOpt = (val, label) => { const opt = el("option", null, label); opt.value = val; filter.appendChild(opt); };
+    addOpt("", `All rules (${keys.length})`);
+    addOpt("__global__", "Global — any teach");
+    teachIds.forEach((id) => addOpt(id, "Teach: " + teachLabel(id)));
+    filter.value = [...filter.options].some((op) => op.value === prev) ? prev : "";
+    const sel = filter.value;
+
     box.innerHTML = "";
     if (!keys.length) {
       box.appendChild(el("p", "hint", "None yet. Use “Teach the modal on screen” (Run tab) when a popup isn't handled right."));
       return;
     }
+    let shown = 0;
     keys.forEach((sig) => {
       const r = rules[sig];
+      if (!r) return;
+      if (sel === "__global__" && r.workflowId) return;           // global-only filter
+      if (sel && sel !== "__global__" && r.workflowId !== sel) return; // specific teach filter
+      shown++;
       const card = el("div", "card");
       const scopeLabel = r.scope === "buttons" ? "any popup with these buttons" : "this message";
+      const where = r.workflowId ? `teach “${teachLabel(r.workflowId)}”` : "any teach";
       card.appendChild(el("div", null, `“${(r.sample || sig).slice(0, 90)}”`));
-      const meta = el("div", "meta", `press “${r.button}” → row ${r.outcome} · applies to: ${scopeLabel}`);
+      const meta = el("div", "meta", `press “${r.button}” → row ${r.outcome} · ${scopeLabel} · ${where}`);
       card.appendChild(meta);
       const del = el("button", "btn danger", "Delete");
       del.style.marginTop = "5px";
@@ -1000,7 +1030,9 @@
       card.appendChild(del);
       box.appendChild(card);
     });
+    if (!shown) box.appendChild(el("p", "hint", "No rules match this filter."));
   }
+  $("#modalRulesFilter").addEventListener("change", loadModalRules);
   $("#modalRulesExport").addEventListener("click", async () => {
     const o = await chrome.storage.local.get(MODAL_RULES_KEY);
     download("maxload-modal-rules.json", JSON.stringify(o[MODAL_RULES_KEY] || {}, null, 2));

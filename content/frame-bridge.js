@@ -121,7 +121,7 @@
             break;
 
           case "ml:cmd:teach-modal": {
-            const res = await MaxLoad.errorWatcher.teachCurrentModal({ button: msg.button, outcome: msg.outcome, scope: msg.scope });
+            const res = await MaxLoad.errorWatcher.teachCurrentModal({ button: msg.button, outcome: msg.outcome, scope: msg.scope, workflowId: msg.workflowId });
             sendResponse(res);
             break;
           }

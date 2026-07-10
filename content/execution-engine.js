@@ -1066,6 +1066,8 @@
       const s = (await chrome.storage.local.get("ml:settings"))["ml:settings"] || {};
       MaxLoad.errorWatcher.setManualTeach(!!s.manualModals);
     } catch (_) { MaxLoad.errorWatcher.setManualTeach(false); }
+    // Tell the modal handler which teach is running, so per-teach popup rules apply.
+    MaxLoad.errorWatcher.setWorkflowContext(opts.workflow && opts.workflow.id);
     const { workflow, fileName } = opts;
     const rows = opts.rows || [];
     const sequence = workflow.mode === "sequence";
