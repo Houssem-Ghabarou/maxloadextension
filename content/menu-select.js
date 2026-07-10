@@ -309,11 +309,15 @@
       if (opener && opener.binding && MaxLoad.binder)
         push(MaxLoad.binder.locate(opener.binding));
       if (opener && opener.near) push(fieldByLabel(opener.near));
-      for (const f of comboFields()) push(f);
+      // Only when the teach captured NO opener do we scan every combobox on screen.
+      // With a taught opener we act ONLY on that field/arrow — clicking every combo
+      // to "find" the menu is exactly the "clicking everywhere" you saw.
+      const haveTaughtOpener = !!(opener && (opener.binding || opener.near || opener.id));
+      if (!haveTaughtOpener) for (const f of comboFields()) push(f);
       if (!cands.length) {
         await MaxLoad.util.sleep(300);
         continue;
-      } // dialog not ready
+      } // taught field not rendered yet — wait and re-resolve, never spray clicks
 
       for (const field of cands) {
         const arrow = arrowForField(field) || resolveOpener(opener);
