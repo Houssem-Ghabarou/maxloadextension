@@ -5,8 +5,69 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MaxLoad</title>
   <link rel="stylesheet" href="panel.css" />
+  <style>
+    #authGate {
+      position: fixed; inset: 0; z-index: 2147483000;
+      display: flex; align-items: center; justify-content: center; padding: 20px;
+      background: linear-gradient(160deg, #f5f9fe, #e6eef8);
+    }
+    #authGate .auth-card {
+      width: 100%; max-width: 300px; box-sizing: border-box; text-align: center;
+      background: #fff; border: 1px solid var(--line); border-radius: 14px;
+      padding: 26px 22px; box-shadow: 0 12px 34px rgba(20, 40, 70, .14);
+    }
+    #authGate .auth-logo {
+      width: 46px; height: 46px; border-radius: 12px; margin: 0 auto 12px;
+      background: var(--accent); color: #fff; font-weight: 800; font-size: 18px;
+      display: grid; place-items: center; box-shadow: 0 4px 12px rgba(18, 102, 214, .35);
+    }
+    #authGate .auth-title { font-size: 20px; font-weight: 700; color: var(--fg); }
+    #authGate .auth-sub { font-size: 12px; color: var(--muted); margin: 2px 0 18px; }
+    #authGate .auth-label {
+      display: block; text-align: left; font-size: 11px; font-weight: 600;
+      color: var(--muted); margin: 12px 0 4px;
+    }
+    #authGate .auth-input {
+      width: 100%; box-sizing: border-box; padding: 10px 12px; font: inherit;
+      border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--fg);
+      outline: none; transition: border-color .12s, box-shadow .12s;
+    }
+    #authGate .auth-input:focus {
+      border-color: var(--accent); box-shadow: 0 0 0 3px rgba(18, 102, 214, .15);
+    }
+    #authGate .auth-btn {
+      width: 100%; margin-top: 20px; padding: 11px; cursor: pointer;
+      border: 0; border-radius: 8px; background: var(--accent); color: #fff;
+      font: inherit; font-weight: 600; transition: background .12s;
+    }
+    #authGate .auth-btn:hover { background: var(--accent-d); }
+    #authGate .auth-btn:disabled { opacity: .6; cursor: default; }
+    #authGate .auth-error { display: none; margin-top: 12px; font-size: 12px; color: var(--err); }
+    #authGate .auth-forgot {
+      display: inline-block; margin-top: 14px; font-size: 12px;
+      color: var(--accent); text-decoration: none;
+    }
+    #authGate .auth-forgot:hover { text-decoration: underline; }
+  </style>
 </head>
 <body>
+  <!-- Login gate. Shown until a valid session exists; JS hides it when signed in
+       (or when Firebase isn't configured yet, so development isn't blocked). -->
+  <div id="authGate">
+    <div class="auth-card">
+      <div class="auth-logo">ML</div>
+      <div class="auth-title">MaxLoad</div>
+      <div class="auth-sub">Sign in to continue</div>
+      <label class="auth-label" for="authEmail">Email</label>
+      <input class="auth-input" type="email" id="authEmail" autocomplete="username" placeholder="you@company.com" />
+      <label class="auth-label" for="authPassword">Password</label>
+      <input class="auth-input" type="password" id="authPassword" autocomplete="current-password" placeholder="••••••••" />
+      <button class="auth-btn" id="authSignIn">Sign in</button>
+      <div id="authError" class="auth-error"></div>
+      <a href="#" id="authForgot" class="auth-forgot">Forgot password?</a>
+    </div>
+  </div>
+
   <header>
     <div class="logo">ML</div>
     <h1>MaxLoad</h1>
@@ -206,6 +267,10 @@
 
     <!-- SETTINGS -->
     <section class="tab" id="tab-settings">
+      <div class="row" id="authRow" style="justify-content:space-between;align-items:center;margin-bottom:10px" hidden>
+        <span class="muted" id="authWho">—</span>
+        <button class="btn" id="authSignOut">Sign out</button>
+      </div>
       <!-- AI settings hidden for now (not needed) -->
       <div id="aiSettings" hidden>
       <h2>AI fallback provider</h2>
@@ -264,6 +329,8 @@
   <!-- SheetJS (bundled) enables .xlsx parsing; panel.js falls back to CSV if absent. -->
   <script src="../lib/xlsx.full.min.js"></script>
   <script src="dialog.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="auth.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>

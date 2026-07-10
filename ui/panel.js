@@ -1279,7 +1279,64 @@
   }
 
   // ---- init -----------------------------------------------------------------
+  // ---- login gate (Firebase Auth, email/password) ---------------------------
+  async function refreshAuthUi() {
+    const gate = $("#authGate");
+    const row = $("#authRow");
+    // Not configured yet → gate off, app open (so development isn't blocked).
+    if (!window.MaxLoadAuth || !window.MaxLoadAuth.isConfigured()) {
+      if (gate) gate.style.display = "none";
+      if (row) row.hidden = true;
+      return true;
+    }
+    const user = await window.MaxLoadAuth.currentUser();
+    if (user) {
+      if (gate) gate.style.display = "none";
+      if (row) { row.hidden = false; $("#authWho").textContent = "Signed in as " + user.email; }
+      return true;
+    }
+    if (gate) gate.style.display = "flex";
+    if (row) row.hidden = true;
+    setTimeout(() => { const e = $("#authEmail"); if (e) e.focus(); }, 50);
+    return false;
+  }
+  async function doSignIn() {
+    const btn = $("#authSignIn"), err = $("#authError");
+    err.style.display = "none";
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = "Signing in…";
+    try {
+      await window.MaxLoadAuth.signIn($("#authEmail").value, $("#authPassword").value);
+      $("#authPassword").value = "";
+      await refreshAuthUi();
+    } catch (e) {
+      err.textContent = (e && e.message) || "Sign in failed.";
+      err.style.display = "block";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+  if ($("#authSignIn")) {
+    $("#authSignIn").addEventListener("click", doSignIn);
+    $("#authPassword").addEventListener("keydown", (e) => { if (e.key === "Enter") doSignIn(); });
+    $("#authEmail").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#authPassword").focus(); });
+    $("#authForgot").addEventListener("click", async (e) => {
+      e.preventDefault();
+      const email = $("#authEmail").value.trim();
+      if (!email) { $("#authEmail").focus(); return; }
+      try { await window.MaxLoadAuth.resetPassword(email); await mlAlert("Password reset email sent to " + email + " (if that account exists)."); }
+      catch (er) { await mlAlert("Could not send reset: " + ((er && er.message) || er)); }
+    });
+    $("#authSignOut").addEventListener("click", async () => {
+      await window.MaxLoadAuth.signOut();
+      await refreshAuthUi();
+    });
+  }
+
   (async function init() {
+    await refreshAuthUi(); // show the login gate before anything else
     await resolveHostTab();
     await ping();
     await renderWorkflowOptions();

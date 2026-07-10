@@ -1,0 +1,11 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // MaxLoad uses Firebase Authentication for the login gate ONLY — no app data is
+    // stored in Firestore. Deny everything so no client can read or write.
+    // (If you later sync teaches/rules, replace this with per-user owner rules.)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

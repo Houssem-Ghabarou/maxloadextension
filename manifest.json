@@ -75,6 +75,8 @@
         "ui/panel.js",
         "ui/panel.css",
         "ui/dialog.js",
+        "ui/firebase-config.js",
+        "ui/auth.js",
         "ui/workflow-editor.html",
         "ui/workflow-editor.js",
         "rules/default-rules.json",
