@@ -113,8 +113,13 @@
     } catch (_) {}
   }
 
-  /** Type into a field with real trusted input (selects + overwrites + commits). */
-  async function typeInto(el, value) {
+  /** Type into a field with real trusted input (selects + overwrites + commits).
+   *  `commitKey` (per field step) is what we press AFTER filling so Maximo commits
+   *  or accepts a confirm. Default "tab" fires field validation; "space-tab"/"tab-space"
+   *  handle fields where Maximo pops a confirm that Space accepts. */
+  async function typeInto(el, value, commitKey) {
+    commitKey = commitKey || "none"; // default: press nothing after filling
+    MaxLoad.debug("type field", { el: desc(el), value: String(value == null ? "" : value).slice(0, 80), commitKey });
     if (el.tagName === "SELECT" || el.type === "checkbox") {
       // dropdowns/checkboxes: trusted click to focus, then set via native path
       await MaxLoad.input.click(el);
@@ -127,7 +132,22 @@
       await MaxLoad.input.type(el, value, "");
       return;
     }
-    await MaxLoad.input.type(el, value, "tab");
+    // BIG on-screen badge so you can visually confirm the commit key actually fires.
+    const commitLabel = { tab: "TAB", enter: "ENTER", space: "SPACE", "space-tab": "SPACE → TAB", "tab-space": "TAB → SPACE" }[commitKey];
+    if (commitLabel) MaxLoad.hl && MaxLoad.hl.keyFlash && MaxLoad.hl.keyFlash(commitLabel);
+    // single-key commits go through the CDP type (atomic with the keystrokes)
+    if (commitKey === "tab" || commitKey === "enter") { await MaxLoad.input.type(el, value, commitKey); return; }
+    if (commitKey === "none") { await MaxLoad.input.type(el, value, ""); return; }
+    // multi-key / space commits: type with no auto-commit, then press the sequence
+    // as trusted keys into the focused node.
+    await MaxLoad.input.type(el, value, "");
+    const seq =
+      commitKey === "space-tab" ? ["space", "tab"] :
+      commitKey === "tab-space" ? ["tab", "space"] :
+      commitKey === "space" ? ["space"] :
+      ["tab"]; // safe default
+    MaxLoad.debug("commit keys after fill", { keys: seq, on: desc(el) });
+    for (const k of seq) await MaxLoad.input.pressKey(k);
   }
 
   /** Read a field's current value/text (for read-back verification). */
@@ -146,11 +166,11 @@
    * which was the old "clears then types again" flicker. Returns true if a value
    * ended up in the field. This is what stops a mandatory field saving blank.
    */
-  async function setFieldValueLoop(el, value) {
+  async function setFieldValueLoop(el, value, commitKey) {
     const want = String(value == null ? "" : value).trim();
     // let any pending round-trip finish before typing (avoids the input-lock drop)
     await MaxLoad.settle.whenIdle({ settleMs: 120, maxWaitMs: 4000 });
-    await typeInto(el, value);
+    await typeInto(el, value, commitKey);
     // Tab-out fires Maximo's field validation (a /ui/maximo.jsp round-trip); wait
     // on the action channel going quiet, event-driven — not a fixed sleep.
     await MaxLoad.settle.whenIdle({ settleMs: 150, maxWaitMs: 4000 });
@@ -160,7 +180,7 @@
     if (wiped) {
       // Maximo wiped it (bean never registered the change) — re-enter once.
       trace("field wiped after commit — re-typing", { el: desc(el), want: want.slice(0, 60) });
-      await typeInto(el, value);
+      await typeInto(el, value, commitKey);
       await MaxLoad.settle.whenIdle({ settleMs: 150, maxWaitMs: 4000 });
       got = readFieldValue(el);
     }
@@ -665,7 +685,131 @@
     return null;
   }
 
+  /** The top-most OPEN Maximo lookup/dialog container (visible, sizeable, highest
+   *  z-index). When one is up, its fields must win over the same-labelled base fields
+   *  sitting underneath it. */
+  function activeDialogRoot() {
+    let best = null, bestZ = -1, bestArea = 0;
+    for (const doc of MaxLoad.dom.collectDocuments(document)) {
+      let els;
+      try {
+        els = doc.querySelectorAll("[role=dialog], [id^='mb'], [id*='lookup'], [class*='dialog'], [class*='popup'], table[modal='true']");
+      } catch (_) { continue; }
+      for (const el of els) {
+        if (!MaxLoad.util.isVisible(el)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 150 || r.height < 80) continue; // too small to be a real dialog
+        const cs = (el.ownerDocument.defaultView || window).getComputedStyle(el);
+        const z = parseInt(cs.zIndex, 10) || 0;
+        const area = r.width * r.height;
+        if (z > bestZ || (z === bestZ && area > bestArea)) { bestZ = z; bestArea = area; best = el; }
+      }
+    }
+    return best;
+  }
+
+  /** A field that belongs to a Maximo lookup/dialog (NOT the base record): a lookup
+   *  filter/query field — class queryField/tablefilterfield, an id containing
+   *  lookup/tfrow, or a query flag in fldinfo — or anything inside the top-most open
+   *  dialog. The BASE field is excluded (class "fld text", id "m<hash>", fldinfo has
+   *  "lookup":… not "query":true). */
+  function isLookupField(el, dlg) {
+    const cn = el.className;
+    const cls = (cn && cn.baseVal != null ? cn.baseVal : cn) || "";
+    if (/queryfield|tablefilterfield/i.test(cls)) return true;
+    if (/lookup|tfrow/i.test(el.id || "")) return true;
+    const fi = el.getAttribute && el.getAttribute("fldinfo");
+    if (fi && /"query"\s*:\s*true/i.test(fi)) return true;
+    if (dlg && dlg.contains(el)) return true;
+    return false;
+  }
+
+  /** When a lookup/dialog is open, find the field matching THIS step among the
+   *  DIALOG's fields only — so typing goes into the modal's filter field, not the
+   *  identically-labelled base field underneath. Match by stable key, then label.
+   *  Null when nothing dialog-side matches (→ normal resolution). */
+  function fieldInActiveDialog(step) {
+    const b = step.binding || {};
+    const t = step.target || {};
+    const wantKey = MaxLoad.matcher.meaningfulKey(b.stableKey || t.stableKey || "");
+    const wantLabel = MaxLoad.util.normLabel(b.label || t.label || "");
+    if (!wantKey && !wantLabel) return null;
+    const dlg = activeDialogRoot();
+    let byLabel = null;
+    for (const doc of MaxLoad.dom.collectDocuments(document)) {
+      let els;
+      try { els = doc.querySelectorAll("input, textarea, [role=textbox], [role=combobox]"); } catch (_) { continue; }
+      for (const el of els) {
+        if (!MaxLoad.util.isVisible(el) || !isLookupField(el, dlg)) continue;
+        if (el.tagName === "INPUT") {
+          const ty = (el.getAttribute("type") || "text").toLowerCase();
+          if (["button", "submit", "image", "reset", "checkbox", "radio", "hidden"].includes(ty)) continue;
+        }
+        if (wantKey) {
+          const k = MaxLoad.matcher.meaningfulKey(MaxLoad.matcher.getStableKey(el) || "");
+          if (k && k === wantKey) return el; // exact field, dialog-side — strongest
+        }
+        if (wantLabel && !byLabel) {
+          const lbl = MaxLoad.util.normLabel((MaxLoad.dom.labelFor && MaxLoad.dom.labelFor(el)) || "");
+          if (lbl && lbl === wantLabel) byLabel = el;
+        }
+      }
+    }
+    return byLabel;
+  }
+
+  /** Clickable cells of the open lookup's RESULT table — Maximo renders each result
+   *  as `<span mxevent="click" ctype="label">` inside a `…tdrow…[R:n]` row. */
+  function lookupResultCells() {
+    const out = [];
+    for (const doc of MaxLoad.dom.collectDocuments(document)) {
+      let els;
+      try {
+        els = doc.querySelectorAll(
+          "span[mxevent='click'][id*='tdrow'], [id*='lookup'][id*='tdrow'] span[ctype='label'], [id*='lookup'] tr[id*='tdrow-tr'] span[ctype='label']"
+        );
+      } catch (_) { continue; }
+      for (const el of els) if (MaxLoad.util.isVisible(el)) out.push(el);
+    }
+    return out;
+  }
+
+  /** SMART PICK: in the open lookup result list, return the row cell that matches what
+   *  was just searched (`searchValue`) — exact, else prefix, else the top result after
+   *  filtering. Re-picks by value every row instead of clicking the demonstrated row. */
+  function pickLookupResult(searchValue) {
+    const cells = lookupResultCells();
+    if (!cells.length) return null;
+    const want = MaxLoad.util.normLabel(searchValue || "");
+    if (want) {
+      const exact = cells.find((el) => MaxLoad.util.normLabel(el.textContent) === want);
+      if (exact) return exact;
+      const starts = cells.find((el) => MaxLoad.util.normLabel(el.textContent).indexOf(want) === 0);
+      if (starts) return starts;
+    }
+    return cells[0]; // filtered to matches → the first row is the one we searched
+  }
+
+  /** A taught click that is really a lookup RESULT-row pick (type "pick", or a click
+   *  whose element is a `…lookup…tdrow…` result cell). */
+  function isLookupResultStep(step) {
+    if (step.type === "pick") return true;
+    if (step.type !== "click") return false;
+    const b = step.binding || {};
+    const id = String(b.id || b.stableKey || "");
+    return /lookup/i.test(id) && /tdrow/i.test(id);
+  }
+
   async function resolveStepField(step, meta) {
+    // 0. A Maximo lookup/dialog on top? Its matching field WINS — the base record has a
+    //    same-labelled field underneath, and typing must go into the modal (this is the
+    //    "it typed in the input under it" fix). Retry once for a slow lookup to paint.
+    let dlgEl = fieldInActiveDialog(step);
+    if (!dlgEl) {
+      await MaxLoad.settle.waitForSettle({ quietMs: 200, timeoutMs: 1500 });
+      dlgEl = fieldInActiveDialog(step);
+    }
+    if (dlgEl) { trace("resolve field ✓ (open dialog)", { el: desc(dlgEl) }); return { el: dlgEl, via: "dialog", score: 100 }; }
     // 1. deterministic, binding-first (fingerprint → label → id) with a late-render retry
     if (step.binding && MaxLoad.binder) {
       let el = MaxLoad.binder.locate(step.binding);
@@ -818,6 +962,8 @@
     let saved = false;
     let filled = 0; // fields/selects actually set — gates never-save-empty
     let emptyRefused = false; // a demo Save reached with nothing filled → refused
+    let lastFieldEl = null; // the field most recently typed into — a following Enter uses it
+    let lastSearchValue = ""; // the value most recently typed — a lookup pick matches it
 
     MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum} [${action}] — starting`, "click");
     trace(`ROW ${rowNum} [${action}] start — ${steps.length} steps`, {
@@ -850,7 +996,25 @@
         if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
         if (h.outcome === "pause") return { status: "paused", message: h.message };
 
-      if (step.type === "click" || isSaveStep(step)) {
+      if (step.type === "click" || step.type === "pick" || isSaveStep(step)) {
+        // SMART PICK: a taught result-row click re-selects the row matching what we
+        // just searched (lastSearchValue) — works for EVERY row, and clicks the row's
+        // clickable span (mxevent=click), not the demonstrated row's text.
+        if (isLookupResultStep(step)) {
+          const pel = pickLookupResult(lastSearchValue);
+          if (pel) {
+            MaxLoad.debug("pick result", { search: lastSearchValue, el: desc(pel) });
+            reportStep(rowNum, idx, "click", `pick “${lastSearchValue}” from list`, "pick");
+            MaxLoad.hl && MaxLoad.hl.flash(pel, "click");
+            await MaxLoad.input.click(pel);
+            await MaxLoad.settle.waitForSettleOrModal({ quietMs: 300, timeoutMs: 6000 });
+            const hp = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
+            if (hp.outcome === "abort") return { status: "abort", message: hp.message };
+            if (hp.outcome === "fail") return { status: "failed", message: hp.message };
+            continue;
+          }
+          MaxLoad.warn(`pick: no lookup result matched "${lastSearchValue}" — normal click`);
+        }
         // skip Maximo grid noise (row-select "tempselect", list toggles) that
         // was recorded before the recorder filtered it — replaying it misfires.
         if (step.type === "click" && !isSaveStep(step) &&
@@ -883,6 +1047,7 @@
           }
           return { status: "failed", transient: true, message: `step ${idx + 1}: button "${step.text || (step.binding && step.binding.stableKey)}" not found` };
         }
+        MaxLoad.debug("click target", { step: idx + 1, text: step.text, via: rb.via, el: desc(rb.el) });
         reportStep(rowNum, idx, save ? "save" : "click", step.text || step.binding.stableKey, rb.via);
         MaxLoad.hl && MaxLoad.hl.flash(rb.el, save ? "save" : "click");
         MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: ${save ? "Save" : "click “" + (step.text || "button") + "”"}`, save ? "save" : "click");
@@ -941,6 +1106,9 @@
         const r = await resolveStepField(step, meta);
         const nm = (step.target && (step.target.label || step.target.stableKey)) || "field";
         if (!r.el) return { status: "failed", transient: true, message: `step ${idx + 1}: field "${nm}" not found` };
+        lastFieldEl = r.el; // remember it, so a following Enter fires in THIS field
+        lastSearchValue = fv.value; // a lookup RESULT pick matches what we just searched
+        MaxLoad.debug("field target", { step: idx + 1, label: nm, via: r.via, el: desc(r.el) });
         if (r.el.getAttribute("readonly") != null || r.el.disabled) {
           warnings.push(`"${nm}" readonly — skipped`);
           continue;
@@ -948,8 +1116,8 @@
         reportStep(rowNum, idx, "field", nm, r.via);
         MaxLoad.hl && MaxLoad.hl.flash(r.el, "field");
         MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: ${nm} = “${fv.value}”`, "field");
-        // trusted keystrokes + Tab commit + read-back + re-type-if-wiped
-        const okv = await setFieldValueLoop(r.el, fv.value);
+        // trusted keystrokes + per-field commit (Tab default) + read-back + re-type
+        const okv = await setFieldValueLoop(r.el, fv.value, step.commitKey);
         if (okv) filled++;
         else warnings.push(`"${nm}" did not accept the value`);
         // a lookup field may pop a chooser — let the rule engine resolve it
@@ -962,14 +1130,19 @@
         if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
         if (h.outcome === "pause") return { status: "paused", message: h.message };
       } else if (step.type === "key") {
-        // press a recorded key (Enter to submit a search, etc.) on its field
-        let kel = null;
-        if (step.binding) {
-          kel = MaxLoad.binder.locate(step.binding);
-          if (kel) await MaxLoad.input.click(kel); // re-focus the field first
+        // press a recorded key (Enter to submit a search, etc.) on its field. Prefer
+        // the MODAL's field (dialog-aware) or the taught binding, but FALL BACK to the
+        // field we just typed into — so Enter fires exactly where the value landed,
+        // never the base field underneath.
+        let kel = fieldInActiveDialog(step) || (step.binding && MaxLoad.binder.locate(step.binding)) || lastFieldEl;
+        MaxLoad.debug("key target", { step: idx + 1, key: step.key, el: kel ? desc(kel) : null });
+        if (kel) {
+          try { kel.focus(); } catch (_) {}
+          await MaxLoad.input.click(kel); // re-focus the field first
         }
         reportStep(rowNum, idx, "key", "⌨ " + step.key, "cdp");
         MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: press ${step.key}`, "click");
+        MaxLoad.hl && MaxLoad.hl.keyFlash && MaxLoad.hl.keyFlash(step.key); // big on-screen key badge
         // belt-and-suspenders: dispatch the key on the element (Maximo onkeydown
         // reads keyCode) AND send a trusted CDP key.
         if (kel) dispatchKeyOn(kel, step.key);

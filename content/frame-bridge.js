@@ -39,6 +39,11 @@
             sendResponse({ ok: true });
             break;
 
+          case "ml:cmd:set-step-commit":
+            MaxLoad.recorder.setStepCommitKey(msg.stepId, msg.commitKey);
+            sendResponse({ ok: true });
+            break;
+
           case "ml:cmd:remove-step":
             MaxLoad.recorder.removeStep(msg.stepId);
             sendResponse({ ok: true });

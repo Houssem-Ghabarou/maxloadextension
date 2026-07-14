@@ -94,9 +94,19 @@
     try { frame = (el.ownerDocument.defaultView === window.top) ? "top" : "iframe:" + (el.ownerDocument.defaultView.location.href || "").slice(0, 60); } catch (_) { frame = "iframe"; }
     let rect = null;
     try { const r = el.getBoundingClientRect(); rect = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; } catch (_) {}
+    const cn = el.className;
+    const cls = (typeof cn === "string" ? cn : (cn && cn.baseVal) || "").trim();
+    const fldinfo = g("fldinfo");
+    // kind: distinguishes a lookup MODAL's query/filter field from the BASE record's
+    // lookup-trigger field — the exact thing to check when debugging "typed in the
+    // wrong Location box".
+    const kind = /queryfield|tablefilterfield/i.test(cls) || /"query"\s*:\s*true/i.test(fldinfo) ? "modal-query"
+      : /"lookup"/i.test(fldinfo) ? "base-lookup" : "";
     return {
       tag: el.tagName,
       id: el.id || "",
+      cls: cls.slice(0, 90),
+      kind: kind,
       name: g("name"),
       type: g("type"),
       role: g("role"),
@@ -213,54 +223,84 @@
   }
 
   /**
-   * Click a control — DOM-FIRST, COORDINATE-FREE.
-   *
-   * 1. Act on the EXACT element reference: realClick fires the pointer/mouse
-   *    sequence Maximo binds to, then el.click() runs inline onclick handlers AND
-   *    javascript: hrefs. Because it targets the element, it can never land on a
-   *    neighbour, and it's immune to scroll/zoom.
-   * 2. If the page visibly reacted, we're done.
-   * 3. ONLY if nothing happened (a rare Dojo widget that ignores synthetic input)
-   *    do we escalate to a TRUSTED key activation on the focused element — still
-   *    coordinate-free. Because we escalate only when step 1 did nothing, this
-   *    can't double-fire a New Row / Save.
+   * Playwright-style ACTIONABILITY gate. Wait until the EXACT resolved element is
+   * genuinely ready to receive a real click, then return the trustworthy TOP-LEVEL
+   * click point. All of these, retried until met or timeout: attached, visible +
+   * enabled, scrolled into view, its box STABLE across checks (not animating/moving),
+   * and a HIT-TEST at its centre resolves to IT (not an overlay/neighbour). Returns
+   * { x, y } for a trusted click, or null when it never became actionable.
+   */
+  async function actionable(el, timeoutMs) {
+    const deadline = MaxLoad.util.now() + (timeoutMs || 5000);
+    let lastBox = null, stable = 0;
+    while (MaxLoad.util.now() < deadline) {
+      if (!el.isConnected) return null; // detached from the DOM
+      if (!MaxLoad.util.isVisible(el)) { await MaxLoad.util.sleep(80); lastBox = null; stable = 0; continue; }
+      try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (_) {}
+      const doc = el.ownerDocument;
+      const win = doc.defaultView || window;
+      const r = el.getBoundingClientRect();
+      // STABLE: same box as the previous check (a Maximo re-render / animation settled).
+      if (lastBox && Math.abs(r.left - lastBox.left) < 1 && Math.abs(r.top - lastBox.top) < 1 &&
+          Math.abs(r.width - lastBox.width) < 1 && Math.abs(r.height - lastBox.height) < 1) stable++;
+      else stable = 0;
+      lastBox = r;
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const inView = cx >= 0 && cy >= 0 && cx <= win.innerWidth && cy <= win.innerHeight;
+      if (inView && stable >= 1) {
+        let hit = null;
+        try { hit = doc.elementFromPoint(cx, cy); } catch (_) {}
+        // HIT-TEST: the centre must resolve to us (or a child/parent), i.e. NOT covered.
+        if (hit && (hit === el || el.contains(hit) || hit.contains(el))) {
+          const { x, y } = topCoords(el); // sum enclosing iframe offsets → top-level point
+          if (x > 0 && y > 0) return { x, y };
+        }
+      }
+      await MaxLoad.util.sleep(60);
+    }
+    return null;
+  }
+
+  /**
+   * Click a control — the extension's `actOn` for clicks. ACTIONABILITY → a HIT-TESTED
+   * TRUSTED click. Because the point is verified (elementFromPoint === this element)
+   * BEFORE clicking, it can't drift onto a neighbour; because it's a trusted CDP click,
+   * Maximo (Dojo) can't ignore it as synthetic. If the element can't be made actionable
+   * in time (covered/animating), we fall back to an ELEMENT-PINNED DOM click — still
+   * coordinate-free, so never a neighbour.
    */
   async function click(el) {
     if (!el) return false;
     const d = describeEl(el);
     const t0 = Date.now();
-    try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (_) {}
-    // let a pending re-render settle so the box we click is where the element is now
-    if (MaxLoad.settle) await MaxLoad.settle.waitForSettle({ quietMs: 100, timeoutMs: 800 });
 
-    // PRIMARY — PLAYWRIGHT / iAMXLS: one TRUSTED click at the element's box centre,
-    // where the BROWSER computes the box (CDP DOM.getBoxModel — composited across
-    // frames, zoom-aware). We tag THIS exact node with a unique attribute so the
-    // worker targets it — never a hand-summed pixel, never a neighbour. Exactly one
-    // click, so a New Row / Save can't be double-fired.
-    const marker = "ml" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-    let sel = null;
-    try { el.setAttribute("data-mlclick", marker); sel = '[data-mlclick="' + marker + '"]'; } catch (_) {}
-    if (sel) {
+    // 1. ACTIONABILITY + hit-test → a trustworthy click point ON this element.
+    const pt = await actionable(el, 5000);
+    if (pt) {
+      // 2. TRUSTED click at the hit-tested point (accurate AND accepted by Maximo).
+      const restore = uncoverPanel(pt.x, pt.y); // move our own panel if it covers the point
       const watch = reactedTo(el, 500);
       let r = null;
-      try { r = await chrome.runtime.sendMessage({ type: "ml:cdp:click-selector", selector: sel }); }
-      catch (e) { MaxLoad.warn("click ▸ cdp box message failed", { el: d, error: String(e) }); }
-      try { el.removeAttribute("data-mlclick"); } catch (_) {}
+      try { r = await chrome.runtime.sendMessage({ type: "ml:cdp:click", x: pt.x, y: pt.y }); }
+      catch (e) { MaxLoad.warn("click ▸ trusted click message failed", { el: d, error: String(e) }); }
+      if (restore) restore();
       if (r && r.ok) {
         const reacted = await watch;
-        MaxLoad.log("click ▸ trusted CDP box click (Playwright-style)", { el: d, x: r.x, y: r.y, reacted, ms: Date.now() - t0 });
+        MaxLoad.log("click ▸ hit-tested trusted click", { el: d, x: pt.x, y: pt.y, reacted, ms: Date.now() - t0 });
         return true;
       }
-      MaxLoad.warn("click ▸ CDP box click could not run — using synthetic fallback", { el: d, error: (r && r.error) || null });
+      MaxLoad.warn("click ▸ trusted click could not run — element DOM fallback", { el: d, error: (r && r.error) || null });
+    } else {
+      MaxLoad.warn("click ▸ not actionable in time (covered/animating?) — element DOM fallback", { el: d });
     }
 
-    // FALLBACK — only when the trusted click could NOT run (so no double-fire):
-    // synthetic pointer/mouse sequence + el.click() on the element reference.
+    // 3. ELEMENT-PINNED fallback (coordinate-free — can never hit a neighbour).
     const w2 = reactedTo(el, 300);
     MaxLoad.util.realClick(el, true);
     try { el.click(); } catch (_) {}
-    MaxLoad.log("click ▸ synthetic fallback", { el: d, reacted: await w2, ms: Date.now() - t0 });
+    const reacted = await w2;
+    if (!reacted && isKeyActivatable(el)) { await activateByKey(el, "enter"); }
+    MaxLoad.log("click ▸ element DOM fallback", { el: d, reacted, ms: Date.now() - t0 });
     return true;
   }
 
@@ -292,6 +332,10 @@
    * the same element.
    */
   async function focusType(el, value, commitKey) {
+    // ACTIONABILITY gate before typing: wait until the field is visible, enabled, and
+    // its box is stable/uncovered — so we never type into a still-painting or covered
+    // field (a lookup modal that hasn't settled). Best-effort: proceed on timeout.
+    await actionable(el, 4000);
     try {
       // scroll into view like Playwright's scrollIntoViewIfNeeded (the field may
       // be below the fold — "scrolling not detected" otherwise).
@@ -381,6 +425,7 @@
   const KEYMAP = {
     enter: { key: "Enter", code: "Enter", vk: 13 },
     tab: { key: "Tab", code: "Tab", vk: 9 },
+    space: { key: " ", code: "Space", vk: 32 },
     escape: { key: "Escape", code: "Escape", vk: 27 },
     esc: { key: "Escape", code: "Escape", vk: 27 },
     arrowdown: { key: "ArrowDown", code: "ArrowDown", vk: 40 },
@@ -390,6 +435,10 @@
   /** Press a key (trusted, via CDP) on whatever is focused; synthetic fallback. */
   async function pressKey(keyName) {
     const k = KEYMAP[String(keyName || "").toLowerCase()] || { key: keyName, code: keyName, vk: 0 };
+    try {
+      const af = document.activeElement;
+      MaxLoad.debug("pressKey", { key: k.key, on: af ? describeEl(af) : null });
+    } catch (_) {}
     try {
       const r = await chrome.runtime.sendMessage({ type: "ml:cdp:key", key: k.key, code: k.code, vk: k.vk });
       if (r && r.ok) return true;

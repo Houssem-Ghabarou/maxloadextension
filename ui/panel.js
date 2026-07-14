@@ -284,6 +284,25 @@
     return sel;
   }
 
+  // After filling a field, which key(s) to press so Maximo commits/confirms it.
+  function commitMenu(step) {
+    const sel = document.createElement("select");
+    sel.style.maxWidth = "150px";
+    sel.title = "Key(s) to press after filling this field (to commit or accept a Maximo confirm)";
+    const add = (label, value) => { const o = el("option", null, label); o.value = value; sel.appendChild(o); };
+    add("nothing", "none");
+    add("Tab", "tab");
+    add("Enter", "enter");
+    add("Space", "space");
+    add("Space → Tab", "space-tab");
+    add("Tab → Space", "tab-space");
+    sel.value = step.commitKey || "none";
+    sel.addEventListener("change", () =>
+      sendCmd({ type: "ml:cmd:set-step-commit", stepId: step.id, commitKey: sel.value })
+    );
+    return sel;
+  }
+
   function stepControls(step) {
     const wrap = el("div", "row");
     wrap.style.gap = "4px";
@@ -339,6 +358,11 @@
         row2.appendChild(el("span", "muted", "set from:"));
         row2.appendChild(colMenu(s));
         li.appendChild(row2);
+      } else if (s.type === "pick") {
+        info.appendChild(el("strong", null, `${i + 1}. 🔎 pick the result matching the search`));
+        info.appendChild(el("div", "meta", `taught “${s.text || "result"}” · picks by the value you searched, every row`));
+        head.append(info, stepControls(s));
+        li.appendChild(head);
       } else {
         info.appendChild(el("strong", null, `${i + 1}. ✎ ${(s.target && s.target.label) || (s.binding && s.binding.stableKey) || "field"}`));
         info.appendChild(el("div", "meta", `[${s.target && s.target.controlType}] key: ${(s.binding && (s.binding.stableKey || s.binding.id)) || "—"}`));
@@ -351,6 +375,8 @@
         row2.appendChild(colMenu(s));
         row2.appendChild(el("span", "muted", "op:"));
         row2.appendChild(opMenu(s));
+        row2.appendChild(el("span", "muted", "after:"));
+        row2.appendChild(commitMenu(s));
         li.appendChild(row2);
       }
       ul.appendChild(li);

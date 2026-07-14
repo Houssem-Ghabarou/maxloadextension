@@ -94,5 +94,33 @@
     } catch (_) {}
   }
 
-  MaxLoad.hl = { flash, clear, toast };
+  // ---- big, unmissable KEY badge — flashes when a special key is pressed so the
+  //      user can visually confirm Tab / Space / Enter actually fired (top frame). ---
+  let keyEl = null, keyTimer = null;
+  function keyFlash(label) {
+    if (!MaxLoad.env.isTop || !label) return;
+    try {
+      if (!keyEl) {
+        keyEl = document.createElement("div");
+        keyEl.id = "maxload-keyflash";
+        keyEl.style.cssText = [
+          "position:fixed", "top:18%", "left:50%", "transform:translateX(-50%)",
+          "z-index:2147483647", "background:#b7791f", "color:#fff",
+          "padding:14px 28px", "border-radius:12px",
+          "font:800 22px/1 -apple-system,Segoe UI,Roboto,sans-serif",
+          "letter-spacing:1px", "box-shadow:0 12px 34px rgba(0,0,0,.45)",
+          "border:2px solid #fff", "pointer-events:none", "white-space:nowrap",
+          "transition:opacity .15s ease"
+        ].join(";");
+        document.documentElement.appendChild(keyEl);
+      }
+      keyEl.textContent = "⌨ " + String(label).toUpperCase() + " pressed";
+      keyEl.style.display = "block";
+      keyEl.style.opacity = "1";
+      clearTimeout(keyTimer);
+      keyTimer = setTimeout(() => { if (keyEl) keyEl.style.display = "none"; }, 1100);
+    } catch (_) {}
+  }
+
+  MaxLoad.hl = { flash, clear, toast, keyFlash };
 })();

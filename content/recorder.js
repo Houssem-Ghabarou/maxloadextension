@@ -75,7 +75,12 @@
         broadcast();
         return;
       }
-      if (s.type !== "set-field") break; // only merge with adjacent field steps
+      // An Enter/key pressed IN THIS SAME field (e.g. to submit a search) sits
+      // between the field click and its late `change` event — skip it so the value
+      // lands on the ORIGINAL field step, not a DUPLICATE placed after the Enter
+      // (which is why the Enter looked out of order and had to be moved).
+      if (s.type === "key" && s.binding && sameBinding(s.binding, binding)) continue;
+      if (s.type !== "set-field") break; // otherwise only merge with adjacent field steps
     }
     state.steps.push({
       id: MaxLoad.util.uid(),
@@ -155,6 +160,19 @@
     broadcast();
   }
 
+  // ---- lookup result "pick" step (select the row matching the search) -------
+  function addPickStep(el) {
+    const text = (MaxLoad.util.elementText(el, 60) || "").trim();
+    state.steps.push({
+      id: MaxLoad.util.uid(),
+      type: "pick",
+      text: text || "result",
+      binding: captureBinding("button", el) // kept for display / fallback resolution
+    });
+    MaxLoad.log("teach: pick lookup result (" + text + ")");
+    broadcast();
+  }
+
   // ---- key steps (only Enter — e.g. to submit a search) ---------------------
   function onKeyDown(ev) {
     if (!state.recording) return;
@@ -208,6 +226,15 @@
         return;
       }
     }
+    // a click on a LOOKUP RESULT row -> a general "pick what was searched" step, so
+    // replay selects the row matching each row's value (not this demo's hard-coded row).
+    const resultCell = ev.target.closest && ev.target.closest(
+      "[id*='lookup'][id*='tdrow'], tr[id*='lookup'][id*='tdrow-tr']"
+    );
+    if (resultCell) {
+      addPickStep(ev.target.closest("span[mxevent], [id*='tdrow']") || resultCell);
+      return;
+    }
     // an explicit click INTO a fillable field records it — this is the ONLY way
     // a field is captured now (never on auto/tab focus).
     const field = ev.target.closest(MaxLoad.dom.CONTROL_SELECTOR);
@@ -259,6 +286,14 @@
     const s = state.steps[typeof stepId === "number" ? stepId : findIndex(stepId)];
     if (!s || s.type !== "set-field") return;
     s.search = !!on; // this field searches & opens the record (UPDATE)
+    broadcast();
+  }
+  /** What to press AFTER filling this field so Maximo commits/confirms it. */
+  function setStepCommitKey(stepId, key) {
+    const s = state.steps[typeof stepId === "number" ? stepId : findIndex(stepId)];
+    if (!s || s.type !== "set-field") return;
+    const allowed = ["tab", "enter", "none", "space", "space-tab", "tab-space"];
+    s.commitKey = allowed.includes(key) ? key : "none";
     broadcast();
   }
   function removeStep(stepId) {
@@ -331,7 +366,6 @@
 
   function broadcast() {
     if (!MaxLoad.env.isTop) return;
-    persist(); // survive a page refresh / navigation mid-teach (see below)
     chrome.runtime?.sendMessage({
       type: "ml:recorder-state",
       recording: state.recording,
@@ -342,67 +376,16 @@
     });
   }
 
-  // ---- durable session: survive a page refresh / navigation mid-teach -------
-  // The recorded steps + "am I recording?" live only in this page-context memory,
-  // which a Maximo navigation (Save / New / search / re-login) destroys — silently
-  // ending the teach and losing every click. We mirror the session to storage on
-  // every change and, on the NEXT content-script load, restore it and RE-ATTACH the
-  // listeners so capture continues without a gap. Works in the extension
-  // (chrome.storage) and the desktop app (the same chrome.storage shim → file store).
+  // ---- session cache is NOT restored across reloads --------------------------
+  // A reload / navigation CANCELS the teach: the recorder comes up empty and we DROP
+  // any cached session (clearSession() at the bottom), so reloading behaves as if the
+  // teach never happened — no resume, no stale steps/columns.
   const SESSION_KEY = "ml:recSession";
-  const LS_KEY = "__maxload_recSession"; // synchronous mirror — catches the click that triggers the reload
-  const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+  const LS_KEY = "__maxload_recSession";
 
-  function snapshot() {
-    return {
-      v: 1, recording: state.recording, action: state.action, columns: state.columns,
-      steps: state.steps, screen: state.screen, startedAt: state.startedAt,
-      newButton: state.newButton, savedAt: Date.now()
-    };
-  }
-  function persist() {
-    const snap = snapshot();
-    // localStorage is SYNCHRONOUS, so it flushes even when the click's very next act
-    // is to navigate away (chrome.storage.set is async and could be lost in that race).
-    try { localStorage.setItem(LS_KEY, JSON.stringify(snap)); } catch (_) {}
-    try { chrome.storage && chrome.storage.local.set({ [SESSION_KEY]: snap }); } catch (_) {}
-  }
   function clearSession() {
     try { localStorage.removeItem(LS_KEY); } catch (_) {}
     try { chrome.storage && chrome.storage.local.remove(SESSION_KEY); } catch (_) {}
-  }
-  function applySnapshot(snap) {
-    if (!snap || !Array.isArray(snap.steps)) return false;
-    if (Date.now() - (snap.savedAt || 0) > SESSION_TTL_MS) return false; // ignore ancient sessions
-    state.action = snap.action || "CREATE";
-    state.columns = Array.isArray(snap.columns) ? snap.columns : [];
-    state.steps = snap.steps;
-    state.screen = snap.screen || state.screen;
-    state.startedAt = snap.startedAt || MaxLoad.util.now();
-    state.newButton = snap.newButton || null;
-    if (snap.recording) {
-      state.recording = true;
-      attach();                                                    // resume capturing NOW
-      setTimeout(() => { if (state.recording) attach(); }, 1500);  // re-attach to late-built iframes
-      MaxLoad.log("teach: resumed after reload — " + state.steps.length + " steps kept");
-    } else {
-      MaxLoad.log("teach: recovered " + state.steps.length + " stopped-but-unsaved steps");
-    }
-    broadcast();
-    return true;
-  }
-  function restoreSession() {
-    if (!MaxLoad.env.isTop) return;
-    let applied = false;
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (raw) applied = applySnapshot(JSON.parse(raw)); // instant — no gap in listening
-    } catch (_) {}
-    // chrome.storage is authoritative (survives cross-origin nav where localStorage can't).
-    try {
-      const p = chrome.storage && chrome.storage.local.get(SESSION_KEY);
-      if (p && p.then) p.then((o) => { const s = o && o[SESSION_KEY]; if (s && !applied) applySnapshot(s); }).catch(() => {});
-    } catch (_) {}
   }
   /** Forget the in-progress session entirely (fresh slate). */
   function discard() {
@@ -423,9 +406,12 @@
 
   MaxLoad.recorder = {
     start, stop, buildWorkflow, discard, status, setNewButton,
-    setStepColumn, setStepOperator, setStepSearch, removeStep, moveStep,
+    setStepColumn, setStepOperator, setStepSearch, setStepCommitKey, removeStep, moveStep,
     get state() { return state; }
   };
 
-  restoreSession(); // auto-recover a teach interrupted by a refresh/navigation
+  // On (re)load: DON'T resume. Drop any cached session so a reload cancels the teach
+  // and its in-progress steps as if it never happened (steps stay fresh in memory
+  // during a single teach; a reload starts over).
+  clearSession();
 })();

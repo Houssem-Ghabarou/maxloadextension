@@ -179,6 +179,7 @@
   MaxLoad.log = (m, d) => util.log("log", m, d);
   MaxLoad.warn = (m, d) => util.log("warn", m, d);
   MaxLoad.error = (m, d) => util.log("error", m, d);
+  MaxLoad.debug = (m, d) => util.log("debug", m, d); // Logs → Debug filter (exact element, commit keys)
 
   MaxLoad.log("namespace bootstrapped (" + MaxLoad.env.frameLabel + ")");
 })();

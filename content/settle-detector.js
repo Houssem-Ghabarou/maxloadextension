@@ -117,21 +117,30 @@
         lastMutation = MaxLoad.util.now();
       });
       try {
-        observer.observe(target, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          characterData: true
-        });
+        // Watch STRUCTURAL changes only (nodes added/removed = real content loading).
+        // Attribute/characterData churn (spinner animation, focus outlines, aria-live
+        // text, a clock) is cosmetic and used to keep the page from EVER going quiet,
+        // forcing every wait to its full timeout. Busy indicator + action channel below
+        // still catch genuine loading.
+        observer.observe(target, { childList: true, subtree: true });
       } catch (_) {}
 
       const tick = async () => {
-        const idleFor = MaxLoad.util.now() - lastMutation;
-        const elapsed = MaxLoad.util.now() - start;
-        const busy = isBusy() || channelBusy();
-        if ((idleFor >= quietMs && !busy) || elapsed >= timeoutMs) {
+        const now = MaxLoad.util.now();
+        const idleFor = now - lastMutation;
+        const elapsed = now - start;
+        const busyVisible = isBusy();
+        const chBusy = channelBusy();
+        // Resolve when the DOM is structurally quiet AND not busy — OR (the key for
+        // never-quiet lookup modals) when Maximo's ACTION CHANNEL has been idle briefly
+        // (server round-trip done) with no visible spinner, even if cosmetic DOM churn
+        // continues. The elapsed>=200 guard gives a just-fired request time to register.
+        const chanQuiet = now - (actionState().last || start);
+        const domSettled = idleFor >= quietMs && !busyVisible && !chBusy;
+        const chanSettled = elapsed >= 200 && !chBusy && !busyVisible && chanQuiet >= 300;
+        if (domSettled || chanSettled || elapsed >= timeoutMs) {
           observer.disconnect();
-          resolve({ settled: idleFor >= quietMs && !busy, timedOut: elapsed >= timeoutMs });
+          resolve({ settled: domSettled || chanSettled, timedOut: elapsed >= timeoutMs });
           return;
         }
         setTimeout(tick, 100);
@@ -171,7 +180,9 @@
       lastMutation = MaxLoad.util.now();
     });
     try {
-      observer.observe(target, { childList: true, subtree: true, attributes: true, characterData: true });
+      // structural changes only — cosmetic attribute/characterData churn (spinner,
+      // clock, focus outline, aria-live) must not keep the page "un-settled" forever.
+      observer.observe(target, { childList: true, subtree: true });
     } catch (_) {}
 
     return new Promise((resolve) => {
@@ -182,12 +193,17 @@
           resolve({ modal: true });
           return;
         }
-        const idleFor = MaxLoad.util.now() - lastMutation;
-        const elapsed = MaxLoad.util.now() - start;
-        const busy = isBusy() || channelBusy();
-        if ((idleFor >= quietMs && !busy) || elapsed >= timeoutMs) {
+        const now = MaxLoad.util.now();
+        const idleFor = now - lastMutation;
+        const elapsed = now - start;
+        const busyVisible = isBusy();
+        const chBusy = channelBusy();
+        const chanQuiet = now - (actionState().last || start);
+        const domSettled = idleFor >= quietMs && !busyVisible && !chBusy;
+        const chanSettled = elapsed >= 200 && !chBusy && !busyVisible && chanQuiet >= 300;
+        if (domSettled || chanSettled || elapsed >= timeoutMs) {
           observer.disconnect();
-          resolve({ settled: idleFor >= quietMs && !busy, timedOut: elapsed >= timeoutMs });
+          resolve({ settled: domSettled || chanSettled, timedOut: elapsed >= timeoutMs });
           return;
         }
         setTimeout(tick, 80);
