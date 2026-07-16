@@ -1,24 +1,37 @@
-/* MaxLoad — trusted input bridge (client side). COORDINATE-FREE / DOM-FIRST.
+/* MaxLoad — trusted input bridge (client side). DOM-ELEMENT DRIVEN.
  *
- * Maximo (TPAE/Dojo) ignores synthetic (isTrusted=false) key events — a bare
+ * Maximo (TPAE/Dojo) ignores synthetic (isTrusted=false) events — a bare
  * `el.value = x` re-renders empty on tab-out, so a mandatory field would save
- * blank. We therefore still need TRUSTED OS-level input from the service worker
- * via the DevTools Protocol. The important part: we NEVER target a screen pixel.
+ * blank, and a plain el.click() on a Dojo widget often does nothing. We therefore
+ * need TRUSTED OS-level input from the service worker via the DevTools Protocol.
  *
- * Every interaction acts on the RESOLVED ELEMENT (found in the DOM by binder /
- * matcher) or on the FOCUSED NODE. CDP only ever types/keys into whatever the
- * page has focused — it is given no coordinates. That makes input immune to
- * browser zoom, devicePixelRatio, scroll position, off-screen fields, moved
- * layout, and cross-origin iframe offsets — the exact things pixel math broke on.
+ * EVERYTHING starts from the RESOLVED ELEMENT (found in the DOM by binder /
+ * matcher via stableKey/label/fingerprint). NOTHING positional is ever stored:
+ * a saved/exported teach contains DOM identity only — never pixels — so it
+ * replays on any browser, machine, DPI or window size.
  *
  * Model (mirrors how Playwright drives an element, not a point):
- *   click  → realClick(el) + el.click() on the element reference; if the widget
- *            ignored it, focus the element and send a trusted Enter/Space (still
- *            coordinate-free) — only for keyboard-activatable controls.
+ *   click  → resolve the element, let a re-render settle, then tag THAT node and
+ *            let the BROWSER compute its box (CDP DOM.getBoxModel) and dispatch
+ *            ONE trusted click at the box centre. This is exactly what
+ *            Playwright's locator.click() does — CDP has no "click this node"
+ *            API, Input.dispatchMouseEvent only takes a point, so the point is
+ *            DERIVED BY THE BROWSER from the live DOM at click time, in the same
+ *            coordinate space it clicks in. It is never stored, never exported,
+ *            and never hand-summed in page JS — which is why it stays correct
+ *            across zoom, devicePixelRatio/display scale, window resize, scroll
+ *            and iframes. (Hand-summing getBoundingClientRect + frame offsets in
+ *            JS is what made clicks drift onto neighbours — don't reintroduce it.)
+ *            The trusted click is NEVER gated behind an elementFromPoint()
+ *            hit-test: Maximo menu items fail that test yet must still be clicked,
+ *            and skipping the trusted click leaves only a synthetic one, which
+ *            Dojo ignores — the element flashes but nothing happens. Only if the
+ *            trusted click could not RUN do we fall back to an ELEMENT-PINNED DOM
+ *            click (+ trusted Enter/Space for keyboard-activatable controls).
  *   type   → focus the element in JS, then CDP types trusted keystrokes into the
- *            focused node; if the value doesn't land, correct it straight onto the
- *            SAME element (never a neighbour).
- *   key    → trusted key into the focused node.
+ *            focused node (no coordinates at all); if the value doesn't land,
+ *            correct it straight onto the SAME element (never a neighbour).
+ *   key    → trusted key into the focused node (no coordinates).
  */
 (function () {
   "use strict";
@@ -274,27 +287,40 @@
     const d = describeEl(el);
     const t0 = Date.now();
 
-    // 1. ACTIONABILITY + hit-test → a trustworthy click point ON this element.
-    const pt = await actionable(el, 5000);
-    if (pt) {
-      // 2. TRUSTED click at the hit-tested point (accurate AND accepted by Maximo).
-      const restore = uncoverPanel(pt.x, pt.y); // move our own panel if it covers the point
+    // 1. Let a pending re-render settle so the box we click is where the element is
+    //    now. Best-effort and SHORT — deliberately NOT an actionability/hit-test gate.
+    try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (_) {}
+    if (MaxLoad.settle) await MaxLoad.settle.waitForSettle({ quietMs: 100, timeoutMs: 800 });
+
+    // 2. TRUSTED click where the BROWSER computes the box (CDP DOM.getBoxModel via a
+    //    unique marker attribute) — composited across frames and zoom-aware, so it
+    //    can't drift onto a neighbour the way hand-summed coordinates could.
+    //
+    //    DO NOT gate this on an elementFromPoint() hit-test. A Maximo menu item
+    //    ("Changer le statut", id …_ns_menu_STATUS_OPTION_a) routinely fails that
+    //    test — it sits under an overlay / isn't painted where its box says — yet it
+    //    IS exactly what must be clicked. Gating it skipped the trusted click and
+    //    left only the synthetic fallback, which Dojo ignores: the element flashed
+    //    blue, no click landed, and the Change Status modal never opened.
+    const marker = "ml" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    let sel = null;
+    try { el.setAttribute("data-mlclick", marker); sel = '[data-mlclick="' + marker + '"]'; } catch (_) {}
+    if (sel) {
       const watch = reactedTo(el, 500);
       let r = null;
-      try { r = await chrome.runtime.sendMessage({ type: "ml:cdp:click", x: pt.x, y: pt.y }); }
-      catch (e) { MaxLoad.warn("click ▸ trusted click message failed", { el: d, error: String(e) }); }
-      if (restore) restore();
+      try { r = await chrome.runtime.sendMessage({ type: "ml:cdp:click-selector", selector: sel }); }
+      catch (e) { MaxLoad.warn("click ▸ cdp box message failed", { el: d, error: String(e) }); }
+      try { el.removeAttribute("data-mlclick"); } catch (_) {}
       if (r && r.ok) {
         const reacted = await watch;
-        MaxLoad.log("click ▸ hit-tested trusted click", { el: d, x: pt.x, y: pt.y, reacted, ms: Date.now() - t0 });
+        MaxLoad.log("click ▸ trusted CDP box click", { el: d, x: r.x, y: r.y, reacted, ms: Date.now() - t0 });
         return true;
       }
-      MaxLoad.warn("click ▸ trusted click could not run — element DOM fallback", { el: d, error: (r && r.error) || null });
-    } else {
-      MaxLoad.warn("click ▸ not actionable in time (covered/animating?) — element DOM fallback", { el: d });
+      MaxLoad.warn("click ▸ CDP box click could not run — element DOM fallback", { el: d, error: (r && r.error) || null });
     }
 
-    // 3. ELEMENT-PINNED fallback (coordinate-free — can never hit a neighbour).
+    // 3. ELEMENT-PINNED fallback — ONLY when the trusted click could not run, so a
+    //    New Row / Save can never double-fire (coordinate-free, never a neighbour).
     const w2 = reactedTo(el, 300);
     MaxLoad.util.realClick(el, true);
     try { el.click(); } catch (_) {}

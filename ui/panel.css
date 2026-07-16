@@ -11,6 +11,9 @@
   --chip: #eef2f7;
 }
 * { box-sizing: border-box; }
+/* `hidden` must win even over flex/grid display rules below (author CSS beats the
+   UA [hidden] rule otherwise, so a `.row`/`.savebar` with [hidden] would still show). */
+[hidden] { display: none !important; }
 html, body {
   margin: 0; height: 100%;
   font: 13px/1.4 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
@@ -123,6 +126,20 @@ button.btn.block { display: block; width: 100%; }
 .filterbar input[type=search] { flex: 1; min-width: 90px; }
 .filterbar select { width: auto; flex: 0 0 auto; }
 input[type=search] { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+
+/* ---- resize grip (bottom-right corner; drag to resize the extension panel) - */
+#resizeGrip {
+  position: fixed; right: 0; bottom: 0; width: 18px; height: 18px;
+  cursor: nwse-resize; z-index: 2147483000;
+  background:
+    linear-gradient(135deg, transparent 0 46%, var(--line) 46% 54%, transparent 54% 100%),
+    linear-gradient(135deg, transparent 0 66%, var(--muted) 66% 74%, transparent 74% 100%);
+}
+
+/* ---- inline saved-teach editor (inside the Teaches card) ------------------- */
+.wf-edit { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.wf-edit .field { margin: 0 0 8px; }
+.wf-edit input[type=text] { width: 100%; }
 
 /* ---- log level rows ------------------------------------------------------- */
 .log .l.info, .log .l.log { }

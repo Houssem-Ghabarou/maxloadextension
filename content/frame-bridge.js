@@ -80,6 +80,12 @@
             sendResponse({ ok: true });
             break;
 
+          case "ml:cmd:load-workflow":
+            // Re-open a saved teach in the step editor (edit it the same way it was taught).
+            MaxLoad.recorder.load(msg.workflow);
+            sendResponse({ ok: true, status: MaxLoad.recorder.status() });
+            break;
+
           case "ml:cmd:set-new-button":
             // Store the taught "Add / New" button (upsert: click it when a row isn't found).
             MaxLoad.recorder.setNewButton(msg.binding);

@@ -54,6 +54,8 @@
     b.addEventListener("click", () => {
       $$("nav button").forEach((x) => x.classList.toggle("active", x === b));
       const id = b.dataset.tab;
+      // Leaving the Teaches tab with an editor open cancels the edit (nothing saved).
+      if (inlineEdit && id !== "workflows") discardInlineEdit();
       $$(".tab").forEach((t) => t.classList.toggle("active", t.id === "tab-" + id));
       if (id === "workflows") renderWorkflows();
       if (id === "logs") loadLogs();
@@ -102,9 +104,40 @@
     });
   })();
 
+  // ---- resize the panel by its bottom-right grip ----------------------------
+  // Extension only: the grip posts deltas to the injector, which resizes the host
+  // iframe. On desktop the panel is an Electron view sized by the window, so hide it.
+  (function setupResize() {
+    const grip = document.getElementById("resizeGrip");
+    if (!grip) return;
+    if (window.chrome && window.chrome.__maxloadShim) { grip.style.display = "none"; return; }
+    let rz = false, lastX = 0, lastY = 0;
+    grip.addEventListener("pointerdown", (e) => {
+      rz = true;
+      lastX = e.screenX; lastY = e.screenY;
+      try { grip.setPointerCapture(e.pointerId); } catch (_) {}
+      window.parent.postMessage({ source: "maxload-panel", type: "resize-start" }, "*");
+      e.preventDefault(); e.stopPropagation();
+    });
+    grip.addEventListener("pointermove", (e) => {
+      if (!rz) return;
+      const dx = e.screenX - lastX, dy = e.screenY - lastY;
+      lastX = e.screenX; lastY = e.screenY;
+      if (dx || dy) window.parent.postMessage({ source: "maxload-panel", type: "resize-move", dx, dy }, "*");
+    });
+    const end = (e) => { if (!rz) return; rz = false; try { grip.releasePointerCapture(e.pointerId); } catch (_) {} };
+    grip.addEventListener("pointerup", end);
+    grip.addEventListener("pointercancel", end);
+  })();
+
   // ---- TEACH (record + auto-bind) -------------------------------------------
   let teachColumns = [];
   let lastTeach = null; // the workflow captured at Stop; saved on demand in step 4
+  let teachName = "";   // last name used, to suggest on the next Save
+  let inlineEdit = null; // { id, ul, nameInput } — inline saved-teach editor open in the Teaches tab
+  const DEFAULT_REC_HINT =
+    "MaxLoad <b>follows every action</b> — click New, click into fields, search, Save. " +
+    "Press <b>Stop</b> when you're done — then review the steps below and click <b>Save teach</b>. Nothing is saved until you do.";
 
   $("#recFile").addEventListener("change", async (e) => {
     const file = e.target.files[0];
@@ -162,29 +195,33 @@
     }
   });
 
-  // Stop ONLY stops listening — the steps stay editable; saving is a separate step.
+  // Stop ONLY stops listening — the steps stay editable; the Save bar appears below.
   $("#recStop").addEventListener("click", async () => {
     const r = await sendCmd({ type: "ml:cmd:stop-recording" });
-    $("#recStart").disabled = !parsedRows;
-    $("#recStop").disabled = true;
     $("#recState").textContent = "stopped";
     $("#recState").className = "chip";
     const wf = r && r.ok && r.workflow;
+    const nSteps = wf ? (wf.steps || []).length : 0;
     if (wf) {
       lastTeach = wf;
-      const nSteps = (wf.steps || []).length;
       const nMapped = (wf.columns || []).length;
-      if (!$("#recName").value.trim()) $("#recName").value = wf.name || "";
-      $("#recSave").disabled = nSteps === 0;
-      $("#recSaveStatus").textContent = "";
+      if (!$("#recName").value.trim()) $("#recName").value = teachName || wf.name || "";
       $("#recSaveHint").innerHTML = nSteps
-        ? `Recorded <b>${nSteps}</b> steps, <b>${nMapped}</b> mapped to columns. Name it and click <b>Save teach</b>.`
+        ? `Recorded <b>${nSteps}</b> steps, <b>${nMapped}</b> mapped to columns. Name it below, then click <b>Save teach</b>.`
         : "Nothing was recorded — press Start and act on the Maximo screen.";
+    }
+    syncRecUi(false, nSteps); // reveals the Save bar when there are steps
+    if (nSteps) {
+      // Bring the naming + Save controls into view and focus the name field.
+      $("#recSaveBar").scrollIntoView({ behavior: "smooth", block: "center" });
+      const nameEl = $("#recName");
+      setTimeout(() => { nameEl.focus(); nameEl.select(); }, 200);
     }
   });
 
-  // Save is independent: rebuild from the CURRENT (post-stop-edited) state, name it, persist.
+  // Save a NEW teach: name it in the visible field, then persist and reset.
   $("#recSave").addEventListener("click", saveTeachNow);
+  $("#recDiscard").addEventListener("click", discardTeach);
   $("#recName").addEventListener("keydown", (e) => { if (e.key === "Enter") saveTeachNow(); });
 
   async function saveTeachNow() {
@@ -195,10 +232,37 @@
     const wf = (r && r.ok && r.workflow) || (lastTeach ? { ...lastTeach, name } : null);
     if (!wf || !(wf.steps || []).length) { flashSave("nothing to save", false); return; }
     await saveWorkflow(wf);
-    lastTeach = wf;
-    flashSave("✓ saved", true);
+    teachName = name;
     renderWorkflowOptions();
+    // After a successful Save, clear the recording but KEEP the file loaded so the
+    // user can teach another operation with the same data right away.
+    await resetTeachWorkspace({ silent: true });
+    $("#recSaveHint").innerHTML = parsedRows
+      ? `✓ Saved <b>${escapeHtml(name)}</b>. Your file is still loaded — press <b>Start</b> to teach another, or pick a new file.`
+      : `✓ Saved <b>${escapeHtml(name)}</b>. Load a file to teach another, or open it under <b>Teaches</b> to edit.`;
   }
+
+  async function discardTeach() {
+    const hasSteps = !!$("#recSteps").querySelector(".card");
+    if (hasSteps && !(await mlConfirm("Discard the recorded steps? This can't be undone."))) return;
+    await resetTeachWorkspace();
+  }
+
+  // Clear the RECORDING back to a clean slate, but KEEP the loaded data file/columns
+  // so the user can immediately teach another operation against the same spreadsheet.
+  async function resetTeachWorkspace(opts) {
+    opts = opts || {};
+    await sendCmd({ type: "ml:cmd:discard-recording" });
+    $("#recName").value = "";
+    $("#recAction").value = "ANY";
+    updateTeachModeUi();
+    renderRecSteps([]);
+    $("#recState").textContent = "idle";
+    $("#recState").className = "chip";
+    if (!opts.silent) $("#recSaveHint").innerHTML = DEFAULT_REC_HINT;
+    syncRecUi(false, 0); // hides the Save bar; Start stays enabled while a file is loaded
+  }
+
   function flashSave(text, ok) {
     const s = $("#recSaveStatus");
     s.textContent = text;
@@ -206,21 +270,111 @@
     if (ok) setTimeout(() => { s.textContent = ""; s.className = "chip"; }, 2500);
   }
 
+  // ---- inline editing of a SAVED teach (stays right in the Teaches tab) ------
+  // Editing loads the teach into the recorder so the same step editor (map column,
+  // reorder ▲▼, delete ✕) works on it, rendered inside the teach's own card.
+  async function openInlineEditor(wf) {
+    // The recorder holds ONE session — loading this teach repurposes it, so clear any
+    // stale (unsaved) teach still shown on the Teach tab to avoid a mismatched view.
+    clearTeachTabView();
+    teachColumns = (wf.allColumns && wf.allColumns.length ? wf.allColumns : wf.columns) || [];
+    inlineEdit = { id: wf.id, ul: null, nameInput: null };
+    await sendCmd({ type: "ml:cmd:load-workflow", workflow: wf });
+    await renderWorkflows(); // rebuilds the list with this card expanded into an editor
+    if (inlineEdit && inlineEdit.nameInput) { inlineEdit.nameInput.focus(); inlineEdit.nameInput.select(); }
+  }
+
+  // Reset the Teach tab's step view to a clean idle state (keeps any loaded file).
+  function clearTeachTabView() {
+    renderRecSteps([]);
+    $("#recName").value = "";
+    $("#recSaveHint").innerHTML = DEFAULT_REC_HINT;
+    $("#recState").textContent = "idle";
+    $("#recState").className = "chip";
+    syncRecUi(false, 0);
+  }
+
+  // Cancel the open inline editor and re-render the list (nothing saved).
+  async function cancelInlineEditor() {
+    await discardInlineEdit();
+    renderWorkflows();
+  }
+
+  // Drop the inline-edit session without re-rendering (e.g. when leaving the tab).
+  async function discardInlineEdit() {
+    if (!inlineEdit) return;
+    inlineEdit = null;
+    await sendCmd({ type: "ml:cmd:discard-recording" });
+  }
+
+  async function saveInlineEditor(wf, status) {
+    const name = (inlineEdit && inlineEdit.nameInput ? inlineEdit.nameInput.value : "").trim();
+    if (!name) { if (inlineEdit && inlineEdit.nameInput) inlineEdit.nameInput.focus(); if (status) { status.textContent = "name it first"; status.className = "chip"; } return; }
+    const r = await sendCmd({ type: "ml:cmd:build-workflow", name });
+    const built = (r && r.ok && r.workflow) || null;
+    if (!built || !(built.steps || []).length) { if (status) status.textContent = "nothing to save"; return; }
+    built.id = wf.id; // update in place — never create a duplicate
+    await saveWorkflow(built);
+    inlineEdit = null;
+    await sendCmd({ type: "ml:cmd:discard-recording" });
+    await renderWorkflows();
+    await renderWorkflowOptions();
+  }
+
+  // Build the inline editor DOM appended inside a teach's card while editing it.
+  function buildInlineEditor(wf, steps) {
+    const box = el("div", "wf-edit");
+
+    const nameField = el("label", "field");
+    nameField.appendChild(el("span", null, "Teach name"));
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.value = wf.name || "";
+    nameInput.placeholder = "Name this teach";
+    nameField.appendChild(nameInput);
+    box.appendChild(nameField);
+
+    box.appendChild(el("p", "hint", "Map each field to a column, reorder ▲▼, delete ✕ — then Save changes."));
+    const ul = el("ul", "list");
+    box.appendChild(ul);
+
+    const actions = el("div", "row");
+    actions.style.marginTop = "8px";
+    const save = el("button", "btn primary", "💾 Save changes");
+    const cancel = el("button", "btn", "Cancel");
+    const status = el("span", "chip");
+    actions.append(save, cancel, status);
+    box.appendChild(actions);
+
+    inlineEdit.ul = ul;
+    inlineEdit.nameInput = nameInput;
+    renderStepsInto(ul, steps, teachColumns, "This teach has no steps.");
+
+    nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") saveInlineEditor(wf, status); });
+    save.addEventListener("click", () => saveInlineEditor(wf, status));
+    cancel.addEventListener("click", cancelInlineEditor);
+    return box;
+  }
+
   // Reflect the recorder's live state in the Teach buttons. Driven by broadcasts
   // AND on panel load — so if a page reload auto-resumed a teach, the panel shows
   // "teaching…" with Stop live again instead of a stale "idle".
   function syncRecUi(recording, nSteps) {
     const chip = $("#recState");
+    const bar = $("#recSaveBar");
     if (recording) {
       $("#recStart").disabled = true;
       $("#recStop").disabled = false;
+      bar.hidden = true; // no saving mid-teach — Stop first
       $("#recSave").disabled = true;
       chip.textContent = "● teaching…";
       chip.className = "chip rec";
     } else {
       $("#recStop").disabled = true;
-      if (nSteps) $("#recSave").disabled = false;
-      $("#recStart").disabled = !parsedRows; // a NEW teach still needs a file for columns
+      // Show the Save bar whenever there are steps to save (stopped or recovered).
+      bar.hidden = !(nSteps > 0);
+      $("#recSave").disabled = !(nSteps > 0);
+      $("#recStart").disabled = !parsedRows; // a NEW teach still needs a file for its columns
       if (chip.className.indexOf("rec") >= 0) { chip.textContent = "stopped"; chip.className = "chip"; }
     }
   }
@@ -234,7 +388,7 @@
     renderRecSteps(st.steps, st.columns);
     syncRecUi(st.recording, st.steps.length);
     if (!st.recording) {
-      $("#recSaveHint").innerHTML = `Recovered <b>${st.steps.length}</b> recorded steps after a reload. Name it and click <b>Save teach</b>.`;
+      $("#recSaveHint").innerHTML = `Recovered <b>${st.steps.length}</b> recorded steps after a reload. Review below, then click <b>Save teach</b>.`;
     }
   }
 
@@ -319,14 +473,21 @@
   }
 
   function renderRecSteps(steps, columns) {
+    renderStepsInto($("#recSteps"), steps, columns,
+      "Nothing recorded yet — press Start, then act on the Maximo screen.");
+  }
+
+  // Render an editable step list into ANY <ul> — used by the Teach tab (#recSteps)
+  // and by the inline saved-teach editor in the Teaches tab.
+  function renderStepsInto(ul, steps, columns, emptyMsg) {
     // Only adopt columns that actually exist — an EMPTY array is truthy in JS, so a
     // recorder broadcast with columns:[] (e.g. after a Maximo page reload) must NOT
     // wipe the columns just loaded from the uploaded file.
     if (columns && columns.length) teachColumns = columns;
-    const ul = $("#recSteps");
+    if (!ul) return;
     ul.innerHTML = "";
     if (!steps || !steps.length) {
-      ul.appendChild(el("li", "hint", "Nothing recorded yet — press Start, then act on the Maximo screen."));
+      ul.appendChild(el("li", "hint", emptyMsg || "Nothing recorded yet — press Start, then act on the Maximo screen."));
       return;
     }
     steps.forEach((s, i) => {
@@ -408,7 +569,15 @@
       box.appendChild(el("p", "muted", "No teaches yet — create one in the Teach tab, or Import one above."));
       return;
     }
+    // If an inline editor is open, use the recorder's LIVE steps (they include edits),
+    // so a re-render of the list keeps the in-progress changes.
+    let editSteps = null;
+    if (inlineEdit) {
+      const st = await sendCmd({ type: "ml:cmd:recorder-status" });
+      editSteps = (st && st.ok && st.status && st.status.steps) || null;
+    }
     for (const wf of list) {
+      const editing = !!(inlineEdit && inlineEdit.id === wf.id);
       const card = el("div", "card");
       card.appendChild(el("h3", null, wf.name));
       card.appendChild(
@@ -416,13 +585,15 @@
       );
       const row = el("div", "row");
       row.style.marginTop = "6px";
-      const edit = el("button", "btn", "Edit JSON");
-      edit.addEventListener("click", () => openEditor(wf.id));
+      const edit = el("button", "btn" + (editing ? " primary" : ""), editing ? "✕ Close editor" : "✏️ Edit");
+      edit.title = editing ? "Close the editor" : "Edit this teach right here — the same way you taught it";
+      edit.addEventListener("click", () => (editing ? cancelInlineEditor() : openInlineEditor(wf)));
       const exp = el("button", "btn", "Export");
       exp.addEventListener("click", () => download(wf.name + ".json", JSON.stringify(wf, null, 2)));
       const del = el("button", "btn danger", "Delete");
       del.addEventListener("click", async () => {
         if (await mlConfirm(`Delete "${wf.name}"?`)) {
+          if (inlineEdit && inlineEdit.id === wf.id) await discardInlineEdit();
           await deleteWorkflow(wf.id);
           renderWorkflows();
           renderWorkflowOptions();
@@ -430,13 +601,9 @@
       });
       row.append(edit, exp, del);
       card.appendChild(row);
+      if (editing) card.appendChild(buildInlineEditor(wf, editSteps || wf.steps));
       box.appendChild(card);
     }
-  }
-
-  function openEditor(id) {
-    const url = chrome.runtime.getURL("ui/workflow-editor.html") + "?id=" + encodeURIComponent(id);
-    chrome.tabs.create({ url });
   }
 
   // ---- import teaches (JSON exported from here, or an array of them) ---------
@@ -765,6 +932,10 @@
   $("#runLogLevel").addEventListener("change", applyRunFilter);
   $("#runLogSearch").addEventListener("input", applyRunFilter);
   $("#runLogSort").addEventListener("change", applyRunSort);
+  $("#runLogClear").addEventListener("click", () => {
+    $("#runFeed").innerHTML = "";
+    runFeedSeq = 0;
+  });
 
   // ---- results export -------------------------------------------------------
   function csvEscape(v) {
@@ -1262,7 +1433,12 @@
   // ---- shared inbound messages ----------------------------------------------
   chrome.runtime.onMessage.addListener((msg) => {
     if (!msg || !msg.type) return;
-    if (msg.type === "ml:recorder-state") { renderRecSteps(msg.steps, msg.columns); syncRecUi(msg.recording, (msg.steps || []).length); }
+    if (msg.type === "ml:recorder-state") {
+      // While editing a saved teach inline, the recorder drives THAT editor's list —
+      // never the Teach tab (its <ul> may not be built yet on the first broadcast).
+      if (inlineEdit) { if (inlineEdit.ul) renderStepsInto(inlineEdit.ul, msg.steps, msg.columns, "This teach has no steps."); }
+      else { renderRecSteps(msg.steps, msg.columns); syncRecUi(msg.recording, (msg.steps || []).length); }
+    }
     else if (msg.type === "ml:progress") onProgress(msg.ev);
     else if (msg.type === "ml:batch-result") {
       if (msg.result && msg.result.aborted) feed("Batch stopped (aborted).", "error");

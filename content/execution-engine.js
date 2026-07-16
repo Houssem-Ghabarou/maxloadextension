@@ -839,6 +839,38 @@
   }
 
   /** Resolve a recorded click step: stable id/text first, AI only if stuck. */
+  /**
+   * The opener (dropdown arrow) for a `select` step.
+   *
+   * openerOf() at teach time only knows how to read Maximo's `data-opener-id` off
+   * the menu; where that attribute isn't present the teach stores an EMPTY opener
+   * ({id:"", near:"", title:"", binding:null}). That is bad: with no hints, the
+   * native bridge's findOpener() falls through to a GENERIC
+   * `querySelector("img[alt*='roulante']…")` and fires the FIRST combo arrow on the
+   * page — a control the user never taught — and openMenu() likewise has to guess.
+   *
+   * But the user DID demonstrate the opener: the click step immediately before the
+   * select IS the dropdown arrow they clicked. Use it. This also repairs teaches
+   * already recorded with an empty opener (no re-teach needed).
+   */
+  function effectiveOpener(step, steps, idx) {
+    const o = step.opener;
+    if (o && (o.id || o.near || o.title || o.binding)) return o; // real opener — keep it
+    const prev = steps && steps[idx - 1];
+    if (!prev || prev.type !== "click" || !prev.binding) return o || null;
+    const b = prev.binding;
+    const derived = {
+      id: b.id || "",          // live id — exact within this session
+      title: b.text || "",     // e.g. "Image déroulante"
+      near: b.label || "",     // e.g. "Nouveau statut:" — stable across sessions
+      binding: b               // full binding, so replay can relocate it
+    };
+    trace("select opener derived from the taught opener click", {
+      step: idx + 1, near: derived.near, title: derived.title, id: derived.id
+    });
+    return derived;
+  }
+
   async function resolveStepButton(step, meta) {
     const quick = () => {
       if (MaxLoad.binder) {
@@ -1167,7 +1199,7 @@
         }
         reportStep(rowNum, idx, "select", `${nm} = ${sv.value}`, "menu");
         MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: ${nm} → “${sv.value}”`, "field");
-        const rs = await MaxLoad.menu.selectSynonym(sv.value, step.opener);
+        const rs = await MaxLoad.menu.selectSynonym(sv.value, effectiveOpener(step, steps, idx));
         if (!rs.ok) return { status: "failed", message: `step ${idx + 1}: ${nm} — ${rs.message}` };
         filled++;
         h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
@@ -1396,8 +1428,10 @@
           const bound = s.column && !["__ignore__", "__fixed__"].includes(s.column);
           const to = bound ? "← col " + s.column : `= code "${s.code}"`;
           const nm = (s.target && s.target.label) || "status";
-          // dry run must not open menus / act; just report the step + opener info
-          const opener = s.opener && (s.opener.binding || s.opener.near || s.opener.title || s.opener.id) ? "opener ok" : "no opener";
+          // dry run must not open menus / act; just report the step + opener info.
+          // Use the SAME derivation replay uses, so this reports what will happen.
+          const eo = effectiveOpener(s, steps, i);
+          const opener = eo && (eo.binding || eo.near || eo.title || eo.id) ? "opener ok" : "no opener";
           results.push({ step: `${i + 1}. status ${nm} ${to}`, found: true, via: "menu (" + opener + ")", score: 100, muted: !bound });
         }
       }

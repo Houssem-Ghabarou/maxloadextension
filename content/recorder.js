@@ -143,8 +143,22 @@
   }
 
   // ---- status/synonym dropdown option -> a `select` step (by internal code) --
+  /** openerOf() can only read Maximo's `data-opener-id` off the menu; where that
+   *  attribute isn't present it returns an EMPTY opener, which at replay makes the
+   *  native bridge guess the first combo arrow on the page. The user just clicked
+   *  the real opener, though — it's the previous click step — so adopt it. */
+  function openerForSelect(el) {
+    const o = MaxLoad.menu.openerOf(el);
+    if (o && (o.id || o.near || o.title || o.binding)) return o;
+    const prev = state.steps[state.steps.length - 1];
+    if (!prev || prev.type !== "click" || !prev.binding) return o;
+    const b = prev.binding;
+    MaxLoad.log("teach: menu had no data-opener-id — using the taught opener click (" + (b.label || b.text || "?") + ")");
+    return { id: b.id || "", title: b.text || "", near: b.label || "", binding: b };
+  }
+
   function addSelectStep(syn) {
-    const opener = MaxLoad.menu.openerOf(syn.el);
+    const opener = openerForSelect(syn.el);
     const label = MaxLoad.util.elementText(syn.el.closest("a,li") || syn.el, 40) || syn.code;
     state.steps.push({
       id: MaxLoad.util.uid(),
@@ -352,8 +366,28 @@
       createdAt: new Date().toISOString(),
       steps: JSON.parse(JSON.stringify(state.steps)),
       columns: [...new Set(mappedCols)],
+      allColumns: [...state.columns], // every column from the file — so editing can remap to any of them
       newButton: state.newButton || null // upsert: where to click when a row isn't found
     };
+  }
+
+  /** Re-open a saved teach for editing — loads its steps/columns back into state
+   *  WITHOUT recording, so the panel's step editor (map/reorder/delete) works on it
+   *  exactly like a just-stopped teach. buildWorkflow() then re-serializes the edits. */
+  function load(wf) {
+    state.recording = false;
+    detach();
+    const a = String((wf && wf.action) || "ANY").toUpperCase();
+    state.action = ["CREATE", "UPDATE", "UPSERT", "ANY"].includes(a) ? a : "ANY";
+    state.steps = wf && Array.isArray(wf.steps) ? JSON.parse(JSON.stringify(wf.steps)) : [];
+    state.columns = wf && Array.isArray(wf.allColumns) && wf.allColumns.length
+      ? wf.allColumns.slice()
+      : (wf && Array.isArray(wf.columns) ? wf.columns.slice() : []);
+    state.screen = (wf && wf.screen) || state.screen;
+    state.newButton = (wf && wf.newButton) || null;
+    clearSession();
+    MaxLoad.log("teach loaded for editing: " + state.steps.length + " steps");
+    broadcast();
   }
 
   /** Store the taught "Add / New" button binding (from the point-and-click pick).
@@ -405,7 +439,7 @@
   }
 
   MaxLoad.recorder = {
-    start, stop, buildWorkflow, discard, status, setNewButton,
+    start, stop, buildWorkflow, discard, load, status, setNewButton,
     setStepColumn, setStepOperator, setStepSearch, setStepCommitKey, removeStep, moveStep,
     get state() { return state; }
   };

@@ -8,8 +8,18 @@
   if (!MaxLoad.env.isTop) return;
 
   const HOST_ID = "maxload-panel-host";
+  const BOX_KEY = "ml:panelBox"; // persisted panel geometry { left, top, width, height }
   let host = null;
   let visible = false;
+  let savedBox = null;
+
+  // Load the last size/position ASAP so the panel comes back the way it was left.
+  try {
+    chrome.storage.local.get(BOX_KEY, (o) => {
+      savedBox = (o && o[BOX_KEY]) || null;
+      if (host && savedBox) applyBox(savedBox);
+    });
+  } catch (_) {}
 
   function ensureHost() {
     if (host && document.body.contains(host)) return host;
@@ -36,6 +46,7 @@
     iframe.setAttribute("allowtransparency", "true");
     host.appendChild(iframe);
     document.documentElement.appendChild(host);
+    if (savedBox) applyBox(savedBox); // restore the user's last size/position
     return host;
   }
 
@@ -51,6 +62,36 @@
   function toggle() {
     if (visible) hide();
     else show();
+  }
+
+  // ---- persist geometry so the panel reopens the way it was left ------------
+  function clampBox(b) {
+    const width = Math.max(300, Math.min(b.width || 380, Math.max(300, window.innerWidth - 16)));
+    const height = Math.max(320, Math.min(b.height || 560, Math.max(320, window.innerHeight - 16)));
+    const left = Math.max(0, Math.min(b.left != null ? b.left : window.innerWidth - width - 16, window.innerWidth - 60));
+    const top = Math.max(0, Math.min(b.top != null ? b.top : 16, window.innerHeight - 34));
+    return { left, top, width, height };
+  }
+  function applyBox(b) {
+    if (!host || !b) return;
+    const c = clampBox(b);
+    host.style.width = c.width + "px";
+    host.style.height = c.height + "px";
+    host.style.maxHeight = "none";
+    host.style.left = c.left + "px";
+    host.style.top = c.top + "px";
+    host.style.right = "auto";
+    host.style.bottom = "auto";
+  }
+  let saveTimer = null;
+  function persistBox() {
+    if (!host) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      const r = host.getBoundingClientRect();
+      savedBox = { left: r.left, top: r.top, width: r.width, height: r.height };
+      try { chrome.storage.local.set({ [BOX_KEY]: savedBox }); } catch (_) {}
+    }, 250);
   }
 
   // ---- dragging (the panel header drives this via postMessage) --------------
@@ -70,6 +111,19 @@
     const top = Math.max(0, Math.min(r.top + dy, window.innerHeight - 34));
     host.style.left = left + "px";
     host.style.top = top + "px";
+    persistBox();
+  }
+
+  // ---- resizing (a corner grip in the panel drives this via postMessage) ----
+  function resizeBy(dx, dy) {
+    if (!host) return;
+    const r = host.getBoundingClientRect();
+    host.style.maxHeight = "none"; // the user is taking manual control of the size
+    const w = Math.max(300, Math.min(r.width + dx, window.innerWidth - r.left - 8));
+    const h = Math.max(320, Math.min(r.height + dy, window.innerHeight - r.top - 8));
+    host.style.width = w + "px";
+    host.style.height = h + "px";
+    persistBox();
   }
 
   window.addEventListener("message", (ev) => {
@@ -77,10 +131,13 @@
     if (!d || d.source !== "maxload-panel" || !visible) return;
     if (d.type === "drag-start") anchorTopLeft();
     else if (d.type === "drag-move") moveBy(d.dx || 0, d.dy || 0);
+    else if (d.type === "resize-start") anchorTopLeft(); // pin top-left so it grows down/right
+    else if (d.type === "resize-move") resizeBy(d.dx || 0, d.dy || 0);
     else if (d.type === "reset-pos") {
       host.style.left = "auto";
       host.style.right = "16px";
       host.style.top = "16px";
+      persistBox();
     }
   });
 

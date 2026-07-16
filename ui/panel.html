@@ -150,18 +150,17 @@
         <button class="btn" id="recStop" disabled>■ Stop</button>
         <span id="recState" class="chip">idle</span>
       </div>
-      <div class="savebar" id="recSaveBar" style="margin-top:8px">
-        <label class="field" style="flex:1;margin:0">
-          <input type="text" id="recName" placeholder="Name this teach — e.g. Work Order entry" />
-        </label>
-        <button class="btn primary" id="recSave" disabled>💾 Save teach</button>
-        <span id="recSaveStatus" class="chip"></span>
-      </div>
-      <p class="hint" id="recSaveHint">MaxLoad <b>follows every action</b> — click New, click into fields, search, Save. Press <b>Stop</b> when done, then name it and click <b>Save teach</b>. Nothing is saved until you do.</p>
+      <p class="hint" id="recSaveHint">MaxLoad <b>follows every action</b> — click New, click into fields, search, Save. Press <b>Stop</b> when you're done — then review the steps below and click <b>Save teach</b>. Nothing is saved until you do.</p>
 
       <h2>3 · Review &amp; map the steps <span class="muted" style="text-transform:none">— map columns, delete extras</span></h2>
       <p class="hint">For each <b>field</b> step, choose which Excel column fills it (default: don't fill). Delete any step with ✕, reorder with ▲▼. This exact sequence replays for every row.</p>
       <ul class="list" id="recSteps"></ul>
+      <div class="savebar" id="recSaveBar" hidden style="margin-top:10px">
+        <input type="text" id="recName" placeholder="Name this teach — e.g. Work Order entry" style="flex:1;min-width:150px" />
+        <button class="btn primary" id="recSave" disabled>💾 Save teach</button>
+        <button class="btn danger" id="recDiscard">Discard</button>
+        <span id="recSaveStatus" class="chip"></span>
+      </div>
     </section>
 
     <!-- RUN -->
@@ -224,6 +223,7 @@
           <option value="asc">Oldest first</option>
           <option value="desc">Newest first</option>
         </select>
+        <button class="btn danger" id="runLogClear" title="Clear this run's log">Clear</button>
       </div>
       <ul class="list log" id="runFeed"></ul>
     </section>
@@ -325,6 +325,9 @@
       </div>
     </section>
   </main>
+
+  <!-- Drag this corner to resize the panel (extension only; hidden on desktop). -->
+  <div id="resizeGrip" title="Drag to resize"></div>
 
   <!-- SheetJS (bundled) enables .xlsx parsing; panel.js falls back to CSV if absent. -->
   <script src="../lib/xlsx.full.min.js"></script>
