@@ -58,42 +58,25 @@
     return { x: Math.round(x), y: Math.round(y) };
   }
 
-  /** If the click point sits under MaxLoad's own panel, hide it for the click so
-   *  the OS click lands on the page, not our toolbar. Returns a restore fn or null. */
-  function uncoverPanel(x, y) {
+  /**
+   * Our own panel is a fixed overlay at the top of the stacking order. A TRUSTED
+   * click is a real browser input event, so it goes through real HIT-TESTING — if
+   * the panel happens to sit over the target (the user dragged/resized it there),
+   * the click lands on the toolbar instead of Maximo. The element still flashes,
+   * because the highlighter is pointer-events:none and purely visual, so it looks
+   * like "it clicked somewhere else".
+   *
+   * Make the panel click-THROUGH for the instant of the click: it stays visible
+   * (no flicker, unlike hiding it) but stops swallowing the event, so the click
+   * reaches whatever is underneath. Needs no coordinates, so it holds no matter
+   * where the panel is moved or how it's resized. Always paired with a restore.
+   */
+  function panelClickThrough() {
     const host = document.getElementById("maxload-panel-host");
     if (!host || host.style.display === "none") return null;
-    const r = host.getBoundingClientRect();
-    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
-      host.style.visibility = "hidden";
-      return () => { host.style.visibility = ""; };
-    }
-    return null;
-  }
-
-  /**
-   * Settle `el` into view and return trustworthy TOP-LEVEL click coordinates — or
-   * null when the point can't be trusted (off-screen in its frame, zero-size, or
-   * the spot is covered). Returning null makes the caller skip the coordinate click
-   * so a scroll/overlay can never send it to a NEIGHBOUR.
-   */
-  async function stableCoords(el) {
-    try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (_) {}
-    if (MaxLoad.settle) await MaxLoad.settle.waitForSettle({ quietMs: 120, timeoutMs: 1000 });
-    else await MaxLoad.util.sleep(120);
-    const doc = el.ownerDocument;
-    const win = doc.defaultView || window;
-    const r = el.getBoundingClientRect();
-    if (r.width < 1 || r.height < 1) return null;
-    const lx = r.left + r.width / 2;
-    const ly = r.top + r.height / 2;
-    if (lx < 0 || ly < 0 || lx > win.innerWidth || ly > win.innerHeight) return null;
-    let hit = null;
-    try { hit = doc.elementFromPoint(lx, ly); } catch (_) {}
-    if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) return null;
-    const { x, y } = topCoords(el);
-    if (x <= 0 || y <= 0) return null;
-    return { x, y };
+    const prev = host.style.pointerEvents;
+    host.style.pointerEvents = "none";
+    return () => { host.style.pointerEvents = prev || ""; };
   }
 
   /** Compact, log-friendly description of an element — so an exported run log
@@ -308,8 +291,15 @@
     if (sel) {
       const watch = reactedTo(el, 500);
       let r = null;
-      try { r = await chrome.runtime.sendMessage({ type: "ml:cdp:click-selector", selector: sel }); }
-      catch (e) { MaxLoad.warn("click ▸ cdp box message failed", { el: d, error: String(e) }); }
+      // Our panel must not swallow this real click if it happens to sit on top.
+      const restorePanel = panelClickThrough();
+      try {
+        r = await chrome.runtime.sendMessage({ type: "ml:cdp:click-selector", selector: sel });
+      } catch (e) {
+        MaxLoad.warn("click ▸ cdp box message failed", { el: d, error: String(e) });
+      } finally {
+        if (restorePanel) restorePanel();
+      }
       try { el.removeAttribute("data-mlclick"); } catch (_) {}
       if (r && r.ok) {
         const reacted = await watch;

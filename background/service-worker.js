@@ -259,17 +259,46 @@ async function cdpClickSelector(tabId, selector) {
   const nodeIds = (got && got.nodeIds) || [];
   // Get a box; take the last match (deepest/freshest) that yields a real quad.
   let quad = null;
+  let nodeId = null;
   for (let i = nodeIds.length - 1; i >= 0 && !quad; i--) {
-    try {
-      const box = await cdp(tabId, "DOM.getBoxModel", { nodeId: nodeIds[i] });
-      if (box && box.model && box.model.content && box.model.width > 0 && box.model.height > 0) quad = box.model.content;
-    } catch (_) { /* node may be detached — try the next */ }
+    const q = await quadFor(tabId, nodeIds[i]);
+    if (q) { quad = q; nodeId = nodeIds[i]; }
   }
   if (!quad) throw new Error("no box model for selector " + selector);
-  const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
-  const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
-  await cdpClick(tabId, x, y);
-  return { x: Math.round(x), y: Math.round(y) };
+
+  // The box must hold STILL before we dispatch. While the window is being resized
+  // (or Maximo is re-flowing) the element moves between measuring and clicking, and
+  // a trusted click at the stale point lands on a NEIGHBOUR. Re-measure until two
+  // reads agree. The 2nd read is normally instant and matches, so this costs ~nothing
+  // on a settled page. Bounded and BEST-EFFORT: if it never settles we click the last
+  // known centre anyway — never skip, or Dojo-only controls would stop working.
+  let c = quadCenter(quad);
+  for (let i = 0; i < 4; i++) {
+    const q2 = await quadFor(tabId, nodeId);
+    if (!q2) break; // detached mid-measure — go with what we have
+    const c2 = quadCenter(q2);
+    const settled = Math.abs(c.x - c2.x) < 1 && Math.abs(c.y - c2.y) < 1;
+    c = c2;
+    if (settled) break;
+    await new Promise((r) => setTimeout(r, 50)); // still moving — let it land
+  }
+
+  await cdpClick(tabId, c.x, c.y);
+  return { x: Math.round(c.x), y: Math.round(c.y) };
+}
+
+/** The element's border-box quad, or null if it has no layout / is detached. */
+async function quadFor(tabId, nodeId) {
+  try {
+    const box = await cdp(tabId, "DOM.getBoxModel", { nodeId });
+    if (box && box.model && box.model.content && box.model.width > 0 && box.model.height > 0) return box.model.content;
+  } catch (_) { /* node may be detached */ }
+  return null;
+}
+
+/** Centre of a CDP content quad [x1,y1, x2,y2, x3,y3, x4,y4]. */
+function quadCenter(q) {
+  return { x: (q[0] + q[2] + q[4] + q[6]) / 4, y: (q[1] + q[3] + q[5] + q[7]) / 4 };
 }
 
 async function cdpKey(tabId, key, code, vk, modifiers) {

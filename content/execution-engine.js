@@ -252,6 +252,19 @@
    * key/search) and Save, by reusing runRowSeq on a create-only sub-sequence — so it
    * keeps all the settle / never-blank / verify safety, with no step-skipping guesses.
    */
+  /**
+   * A popup asked us to create the record ("record not found" → taught outcome
+   * "create"). Do it — UNLESS we're already replaying a create tail, where creating
+   * again is exactly the infinite loop: the tail's own Save popup re-triggers create,
+   * which re-runs the tail, forever. In that case fail the row honestly and move on,
+   * rather than silently falling through to the next step as if nothing happened.
+   */
+  async function createOrFail(allowCreate, workflow, row, rowNum, h) {
+    if (allowCreate) return await runCreateForRow(workflow, row, rowNum);
+    MaxLoad.warn(`row ${rowNum}: popup asked to create while already creating — skipping the row instead of recursing`, { popup: (h && h.message || "").slice(0, 120) });
+    return { status: "failed", message: ((h && h.message) ? h.message.slice(0, 120) + " — " : "") + "create requested again inside the create tail (skipped)" };
+  }
+
   async function runCreateForRow(workflow, row, rowNum) {
     const fills = (workflow.steps || []).filter(
       (s) => ((s.type === "set-field" || s.type === "select") && s.column !== "__key__") || isSaveStep(s)
@@ -264,7 +277,12 @@
     const createWf = { ...workflow, action: "CREATE", steps: [newStep, ...fills] };
     MaxLoad.log(`row ${rowNum}: record not found → creating (New + ${fills.length} steps)`);
     MaxLoad.hl && MaxLoad.hl.toast(`Row ${rowNum}: not found → creating`, "click");
-    return await runRowSeq(createWf, row, rowNum);
+    // { noCreate: true } is the AUTHORITATIVE recursion stop. Setting createWf.action
+    // = "CREATE" is not enough on its own: runRowSeq derives `action` from
+    // `row._action || workflow.action`, so a run file carrying an _action column
+    // ("ANY"/"UPSERT"/…) overrode it, left allowCreate true inside this create tail,
+    // and the same save popup re-triggered create forever.
+    return await runRowSeq(createWf, row, rowNum, { noCreate: true });
   }
 
   /** Best-effort total from a Maximo "1 - 10 of 137" / "0 of 0" / "1 à 10 sur 137"
@@ -986,9 +1004,15 @@
     // UPSERT (update-or-create): the trigger is Maximo's OWN "record not found" popup,
     // which the user teaches once as outcome "create" (see error-watcher). When any
     // errorWatcher.handle() returns outcome "create", we build the record via
-    // runCreateForRow (New + the same fills). Disabled while we're already replaying a
-    // create sub-sequence (action CREATE), so it can never recurse.
-    const allowCreate = action !== "CREATE";
+    // runCreateForRow (New + the same fills).
+    //
+    // Creation MUST be off while we're already replaying a create sub-sequence, or the
+    // popup that triggered it fires again inside the tail and recurses forever. Do NOT
+    // rely on `action !== "CREATE"` alone for that: `action` comes from
+    // `row._action || workflow.action`, so a run file with an _action column beats the
+    // workflow.action="CREATE" that runCreateForRow sets. The explicit opts.noCreate
+    // flag it passes is the real stop — data can't override it.
+    const allowCreate = action !== "CREATE" && !(opts && opts.noCreate);
     const steps = workflow.steps || [];
     const warnings = [];
     let saved = false;
@@ -1025,7 +1049,7 @@
       let h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
       if (h.outcome === "abort") return { status: "abort", message: h.message };
       if (h.outcome === "fail") return { status: "failed", message: h.message };
-        if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
+        if (h.outcome === "create") return await createOrFail(allowCreate, workflow, row, rowNum, h);
         if (h.outcome === "pause") return { status: "paused", message: h.message };
 
       if (step.type === "click" || step.type === "pick" || isSaveStep(step)) {
@@ -1118,7 +1142,7 @@
           h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
           if (h.outcome === "abort") return { status: "abort", message: h.message };
           if (h.outcome === "fail") return { status: "failed", message: h.message };
-        if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
+        if (h.outcome === "create") return await createOrFail(allowCreate, workflow, row, rowNum, h);
         if (h.outcome === "pause") return { status: "paused", message: h.message };
         }
 
@@ -1159,7 +1183,7 @@
         h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
         if (h.outcome === "abort") return { status: "abort", message: h.message };
         if (h.outcome === "fail") return { status: "failed", message: h.message };
-        if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
+        if (h.outcome === "create") return await createOrFail(allowCreate, workflow, row, rowNum, h);
         if (h.outcome === "pause") return { status: "paused", message: h.message };
       } else if (step.type === "key") {
         // press a recorded key (Enter to submit a search, etc.) on its field. Prefer
@@ -1184,7 +1208,7 @@
         h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
         if (h.outcome === "abort") return { status: "abort", message: h.message };
         if (h.outcome === "fail") return { status: "failed", message: h.message };
-        if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
+        if (h.outcome === "create") return await createOrFail(allowCreate, workflow, row, rowNum, h);
         if (h.outcome === "pause") return { status: "paused", message: h.message };
       } else if (step.type === "select") {
         // Maximo status/synonym dropdown: open the menu (reusing the opener the
@@ -1205,7 +1229,7 @@
         h = await MaxLoad.errorWatcher.handle(rowNum, meta.screen);
         if (h.outcome === "abort") return { status: "abort", message: h.message };
         if (h.outcome === "fail") return { status: "failed", message: h.message };
-        if (allowCreate && h.outcome === "create") return await runCreateForRow(workflow, row, rowNum);
+        if (h.outcome === "create") return await createOrFail(allowCreate, workflow, row, rowNum, h);
         if (h.outcome === "pause") return { status: "paused", message: h.message };
       }
     }
